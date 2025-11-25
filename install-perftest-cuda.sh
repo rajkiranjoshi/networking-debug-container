@@ -9,6 +9,7 @@ apt-get install -y --no-install-recommends \
     autoconf \
     automake \
     libtool \
+    libpci-dev \
     libibverbs-dev \
     librdmacm-dev \
     pkg-config
