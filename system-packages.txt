@@ -1,5 +1,7 @@
 iproute2
 lshw
 pciutils
-infiniband-diags
-
+ethtool
+net-tools
+htop
+vim

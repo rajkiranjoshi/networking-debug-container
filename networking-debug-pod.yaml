@@ -4,20 +4,31 @@ metadata:
   name: networking-debug-pod
   namespace: default
 spec:
-  hostNetwork: true       # Bypasses CNI to see raw eth0/ib0 interfaces
+  hostNetwork: true       # Equivalent to --network=host
   restartPolicy: Never
   nodeName: "pokprod-b93r39s1"  # <--- Forces pod to this specific node
   containers:
   - name: networking-debug-container
-    # Using a recent NGC PyTorch image (contains CUDA, NCCL, rdma-core)
-    image: nvcr.io/nvidia/pytorch:24.03-py3
+    image: quay.io/rajjoshi/networking-debug-container
     securityContext:
-      privileged: true    # Required to access /dev/infiniband/*
+      privileged: true    # Provides access to all host devices including /dev/infiniband/*
+    
+    # Access to InfiniBand devices (privileged mode already provides this, but explicit is better)
+    volumeMounts:
+    - name: dev-infiniband
+      mountPath: /dev/infiniband
+    
     command: ["/bin/bash", "-c"]
-    # While NGC has rdma-core, 'perftest' (ib_write_bw) isn't always in the path.
-    # We install iproute2 (for 'ip') and perftest just to be 100% sure they are available.
     args: 
-    - >
-      apt-get update && apt-get install -y iproute2 perftest lshw infiniband-diags pciutils ethtool &&
-      echo "Ready for debugging. Sleeping..." && 
+    - |
+      echo "=== Networking Debug Container Ready ==="
+      echo "Available tools: ib_write_bw, ibv_devinfo, perftest suite, MLNX OFED tools"
+      echo "CUDA support: Enabled (use --use_cuda=<id> with perftest)"
+      echo ""
       sleep infinity
+  
+  volumes:
+  - name: dev-infiniband
+    hostPath:
+      path: /dev/infiniband
+      type: Directory

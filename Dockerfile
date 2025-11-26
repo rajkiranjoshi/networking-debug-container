@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.8.1-base-ubuntu24.04
+FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 # Set environment to avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,14 +14,14 @@ RUN apt-get update && \
 
 # Install Mellanox OFED
 # Note: Using the repository method for Ubuntu 24.04
-RUN wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | apt-key add - && \
-    echo "deb https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
+RUN wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | gpg --dearmor -o /usr/share/keyrings/mellanox-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/mellanox-archive-keyring.gpg] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        mlnx-ofed-basic \
-        libibverbs1 \
+        mlnx-ofed-all \
+        mlnx-tools \
         ibverbs-utils \
-        rdma-core && \
+        mft && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy system packages list and installation scripts
@@ -37,6 +37,9 @@ RUN apt-get update && \
 RUN chmod +x /tmp/install-perftest-cuda.sh && \
     /tmp/install-perftest-cuda.sh && \
     rm /tmp/install-perftest-cuda.sh
+
+# Update PCI IDs database
+RUN update-pciids
 
 # Default command
 CMD ["/bin/bash"]
