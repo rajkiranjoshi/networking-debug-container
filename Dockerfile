@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+FROM ubuntu:24.04
 
 # Set environment to avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -11,6 +11,19 @@ RUN apt-get update && \
         ca-certificates \
         apt-transport-https && \
     rm -rf /var/lib/apt/lists/*
+
+# Install CUDA Toolkit 12.8
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    rm cuda-keyring_1.1-1_all.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set CUDA environment variables
+ENV PATH=/usr/local/cuda-12.8/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
 
 # Install Mellanox OFED
 # Note: Using the repository method for Ubuntu 24.04
@@ -40,6 +53,15 @@ RUN chmod +x /tmp/install-perftest-cuda.sh && \
 
 # Update PCI IDs database
 RUN update-pciids
+
+# Enable colored prompt in bash
+RUN sed -i 's/#force_color_prompt=yes/force_color_prompt=yes/' /root/.bashrc
+
+# Copy scripts directory to /root
+COPY scripts /root/scripts
+
+# Set working directory to /root
+WORKDIR /root
 
 # Default command
 CMD ["/bin/bash"]

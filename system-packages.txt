@@ -5,3 +5,4 @@ ethtool
 net-tools
 htop
 vim
+less
