@@ -6,3 +6,6 @@ net-tools
 htop
 vim
 less
+iperf
+iperf3
+tcpdump
