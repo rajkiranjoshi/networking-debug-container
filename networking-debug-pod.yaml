@@ -6,7 +6,7 @@ metadata:
 spec:
   hostNetwork: true       # Equivalent to --network=host
   restartPolicy: Never
-  nodeName: "pokprod-b93r39s1"  # <--- Forces pod to this specific node
+  nodeName: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
   containers:
   - name: networking-debug-container
     image: quay.io/rajjoshi/networking-debug-container
