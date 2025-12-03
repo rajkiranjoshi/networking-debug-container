@@ -10,6 +10,7 @@ spec:
   containers:
   - name: networking-debug-container
     image: quay.io/rajjoshi/networking-debug-container:optimized
+    imagePullPolicy: Always  # Always pull the latest image, even if tag is the same
     # resources:
     #   limits:
     #     nvidia.com/gpu: 8    # Request GPU access (equivalent to --gpus=all)
