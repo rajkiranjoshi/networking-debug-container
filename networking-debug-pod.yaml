@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: networking-debug-pod
+  name: REPLACE_POD_NAME  # Will be replaced by deploy_pod_to_node.sh
   namespace: default
 spec:
   hostNetwork: true       # Equivalent to --network=host
@@ -9,7 +9,10 @@ spec:
   nodeName: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
   containers:
   - name: networking-debug-container
-    image: quay.io/rajjoshi/networking-debug-container
+    image: quay.io/rajjoshi/networking-debug-container:optimized
+    # resources:
+    #   limits:
+    #     nvidia.com/gpu: 8    # Request GPU access (equivalent to --gpus=all)
     securityContext:
       privileged: true    # Provides access to all host devices including /dev/infiniband/*
     
