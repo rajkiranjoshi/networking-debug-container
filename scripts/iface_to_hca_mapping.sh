@@ -2,6 +2,7 @@
 
 # Arrays to store interface -> HCA mappings
 declare -A iface_hca_map
+declare -A iface_sriov_map
 declare -a iface_list
 
 # 1. Loop through all network interfaces
@@ -22,6 +23,14 @@ for iface_path in /sys/class/net/*; do
         if [ ! -z "$hca_id" ]; then
             iface_hca_map["$iface"]="$hca_id"
             iface_list+=("$iface")
+            
+            # Check if this is an SR-IOV Virtual Function (VF)
+            # VFs have a 'physfn' symlink pointing to their parent Physical Function
+            if [ -L "$iface_path/device/physfn" ]; then
+                iface_sriov_map["$iface"]=1
+            else
+                iface_sriov_map["$iface"]=0
+            fi
         fi
     fi
 done
@@ -41,6 +50,14 @@ unset IFS
 
 for iface in "${sorted_ifaces[@]}"; do
     hca_id="${iface_hca_map[$iface]}"
-    printf "%-15s | %s\n" "$iface" "$hca_id"
+    # Mark SR-IOV VFs with an asterisk
+    if [ "${iface_sriov_map[$iface]}" -eq 1 ]; then
+        printf "%-15s | %s *\n" "$iface" "$hca_id"
+    else
+        printf "%-15s | %s\n" "$iface" "$hca_id"
+    fi
 done
+
+echo ""
+echo "* = SR-IOV Virtual Function (VF)"
 
