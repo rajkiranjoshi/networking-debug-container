@@ -6,6 +6,7 @@ metadata:
 spec:
   hostNetwork: true       # Equivalent to --network=host
   restartPolicy: Never
+  terminationGracePeriodSeconds: 1
   nodeName: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
   containers:
   - name: networking-debug-container
