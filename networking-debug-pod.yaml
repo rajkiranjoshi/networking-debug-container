@@ -12,9 +12,9 @@ spec:
   - name: networking-debug-container
     image: quay.io/rajjoshi/networking-debug-container:latest
     imagePullPolicy: Always  # Always pull the latest image, even if tag is the same
-    # resources:
-    #   limits:
-    #     nvidia.com/gpu: 8    # Request GPU access (equivalent to --gpus=all)
+    resources:
+      limits:
+        nvidia.com/gpu: REPLACE_GPU_COUNT    # Will be replaced by deploy_pod_to_node.sh
     securityContext:
       privileged: true    # Provides access to all host devices including /dev/infiniband/*
     
