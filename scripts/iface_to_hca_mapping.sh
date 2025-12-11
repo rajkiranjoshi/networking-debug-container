@@ -29,8 +29,13 @@ for iface_path in /sys/class/net/*; do
             seen_hca_ids["$hca_id"]=1
             
             # Check if this is an SR-IOV Virtual Function (VF)
-            # VFs have a 'physfn' symlink pointing to their parent Physical Function
+            # Method 1: VFs have a 'physfn' symlink pointing to their parent Physical Function
+            # Method 2: For passthrough VFs in VMs, physfn doesn't exist but neither does
+            #           sriov_totalvfs (which only exists on PFs). For mlx5/ConnectX devices
+            #           (which all support SR-IOV), absence of sriov_totalvfs indicates a VF.
             if [ -L "$iface_path/device/physfn" ]; then
+                iface_sriov_map["$iface"]=1
+            elif [ ! -f "$iface_path/device/sriov_totalvfs" ]; then
                 iface_sriov_map["$iface"]=1
             else
                 iface_sriov_map["$iface"]=0
@@ -56,7 +61,11 @@ for hca_path in /sys/class/infiniband/*; do
     iface_list+=("$placeholder")
     
     # Check if this is an SR-IOV Virtual Function (VF)
+    # Method 1: VFs have a 'physfn' symlink pointing to their parent Physical Function
+    # Method 2: For passthrough VFs in VMs, check if sriov_totalvfs doesn't exist
     if [ -L "$hca_path/device/physfn" ]; then
+        iface_sriov_map["$placeholder"]=1
+    elif [ ! -f "$hca_path/device/sriov_totalvfs" ]; then
         iface_sriov_map["$placeholder"]=1
     else
         iface_sriov_map["$placeholder"]=0
