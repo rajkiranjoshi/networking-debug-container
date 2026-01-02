@@ -7,11 +7,10 @@ fi
 
 # List of nodes to run the script on
 nodes=(
-    "pokprod-b93r39s1"
-    "pokprod-b93r43s3"
-    "pokprod-b93r44s0"
-    "pokprod-b93r44s1"
-    "pokprod-b93r44s2"
+    "psap-gpu-xhnvx-worker-3-5g8cv"
+    "psap-gpu-xhnvx-worker-3-6bsjp"
+    "psap-gpu-xhnvx-worker-3-db7jp"
+    "psap-gpu-xhnvx-worker-3-dls46"
 )
 
 
