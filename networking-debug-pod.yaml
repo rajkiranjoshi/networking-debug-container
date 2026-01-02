@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: REPLACE_POD_NAME  # Will be replaced by deploy_pod_to_node.sh
-  namespace: default
+  namespace: REPLACE_NAMESPACE  # Will be replaced by deploy_pod_to_node.sh
 spec:
   hostNetwork: true       # Equivalent to --network=host
   restartPolicy: Never
