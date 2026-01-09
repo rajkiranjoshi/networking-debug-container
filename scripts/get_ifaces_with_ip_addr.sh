@@ -21,37 +21,48 @@ ip -br addr show scope global | awk '$3 != ""' | while read iface status ip; do
         fi
     fi
     
-    # Get the MAC address of the current logical interface (e.g., br-ex)
-    iface_mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
-
-    # 3. Find the physical backing port
-    # We look for another interface that:
-    #   a) Is NOT the interface we are currently checking
-    #   b) Has a physical 'device' symlink (meaning it's real hardware)
-    #   c) Shares the exact same MAC address
-    
-    if [ ! -z "$iface_mac" ]; then
-        for syspath in /sys/class/net/*; do
-            cand_name=$(basename "$syspath")
-            
-            # Skip itself
-            if [ "$cand_name" == "$iface" ]; then continue; fi
-            
-            # Check if this candidate is real hardware (has /device folder)
-            if [ -L "$syspath/device" ]; then
-                cand_mac=$(cat "$syspath/address" 2>/dev/null)
-                
-                if [ "$cand_mac" == "$iface_mac" ]; then
-                    phys_match="$cand_name"
-                    break # Found it, stop searching
-                fi
-            fi
-        done
+    # 3. Determine PHY Port
+    # Check if this interface ITSELF is a physical interface (has device symlink)
+    is_physical=false
+    if [ -L "$iface_path/device" ]; then
+        is_physical=true
     fi
 
-    # Formatting: If no physical match found, mark as purely virtual
-    if [ -z "$phys_match" ]; then
-        phys_match="(Virtual)"
+    if [ "$is_physical" = true ]; then
+        # This interface is a physical interface itself
+        phys_match="(Physical)"
+    else
+        # This is a virtual interface - look for a physical backing port
+        # by finding another interface that:
+        #   a) Is NOT the interface we are currently checking
+        #   b) Has a physical 'device' symlink (meaning it's real hardware)
+        #   c) Shares the exact same MAC address
+        
+        iface_mac=$(cat /sys/class/net/$iface/address 2>/dev/null)
+        
+        if [ ! -z "$iface_mac" ]; then
+            for syspath in /sys/class/net/*; do
+                cand_name=$(basename "$syspath")
+                
+                # Skip itself
+                if [ "$cand_name" == "$iface" ]; then continue; fi
+                
+                # Check if this candidate is real hardware (has /device folder)
+                if [ -L "$syspath/device" ]; then
+                    cand_mac=$(cat "$syspath/address" 2>/dev/null)
+                    
+                    if [ "$cand_mac" == "$iface_mac" ]; then
+                        phys_match="$cand_name"
+                        break # Found it, stop searching
+                    fi
+                fi
+            done
+        fi
+
+        # If no physical backing found, mark as purely virtual
+        if [ -z "$phys_match" ]; then
+            phys_match="(Virtual)"
+        fi
     fi
 
     # 4. Print the row
