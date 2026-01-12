@@ -1,0 +1,14 @@
+[project]
+name = "pingmesh"
+version = "0.1.0"
+description = "Pingmesh test for RoCE cluster NIC connectivity validation"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+pingmesh = "pingmesh:main"
+
+[dependency-groups]
+dev = []
