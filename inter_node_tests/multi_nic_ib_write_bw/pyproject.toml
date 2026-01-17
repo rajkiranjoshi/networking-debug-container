@@ -1,0 +1,14 @@
+[project]
+name = "multi-nic-ib-write-bw"
+version = "0.1.0"
+description = "Multi-NIC IB Write Bandwidth test for parallel RDMA throughput measurement"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+multi-nic-ib-write-bw = "multi_nic_ib_write_bw:main"
+
+[dependency-groups]
+dev = []
