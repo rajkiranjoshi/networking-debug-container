@@ -13,33 +13,39 @@ NC='\033[0m' # No Color
 bi_directional=false
 namespace="default"
 json_output=false
-use_iterations=false
+use_iterations=true
+iterations=5000
+iterations_set=false
+num_qps=1
 
 # Function to print usage
 usage() {
-    echo "Usage: $0 --src <pod>:<hca>[:<gpu>] --dst <pod>:<hca>[:<gpu>] --msg-size <size> --num-qps <n> (--duration <sec> | --iterations <n>) [options]"
+    echo "Usage: $0 --src <pod>:<hca>[:<gpu>] --dst <pod>:<hca>[:<gpu>] --msg-size <size> [options]"
     echo ""
     echo "Arguments:"
     echo "  --src <pod>:<hca>[:<gpu>]      Source pod name, HCA ID (e.g., mlx5_0), and optional GPU index"
     echo "  --dst <pod>:<hca>[:<gpu>]      Destination pod name, HCA ID, and optional GPU index"
     echo "  --msg-size <size>              Message size in bytes (e.g., 65536, 1048576)"
-    echo "  --num-qps <n>                  Number of queue pairs"
     echo "  --duration <sec>               Test duration in seconds (mutually exclusive with --iterations)"
-    echo "  --iterations <n>               Number of iterations (mutually exclusive with --duration)"
+    echo "  --iterations <n>               Number of iterations (default: 5000, mutually exclusive with --duration)"
     echo "                                 Note: iterations mode also measures peak bandwidth"
+    echo "  --num-qps <n>                  Number of queue pairs (default: 1)"
     echo "  --bi-directional               Enable bi-directional bandwidth test (optional)"
-    echo "  --namespace <ns>               Kubernetes namespace (default: default)"
+    echo "  -n, --namespace <ns>           Kubernetes namespace (default: default)"
     echo "  --json                         Output results as parsable JSON (suppresses human-readable output)"
     echo ""
     echo "Examples:"
-    echo "  # Duration-based test (measures average bandwidth)"
-    echo "  $0 --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 65536 --num-qps 1 --duration 10"
+    echo "  # Simple test (uses defaults: 5000 iterations, 1 QP)"
+    echo "  $0 --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 1048576"
     echo ""
-    echo "  # Iteration-based test (measures peak and average bandwidth)"
+    echo "  # Duration-based test (measures average bandwidth only)"
+    echo "  $0 --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 65536 --duration 10"
+    echo ""
+    echo "  # Iteration-based test with 4 QPs (measures peak and average bandwidth)"
     echo "  $0 --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 1048576 --num-qps 4 --iterations 5000"
     echo ""
     echo "  # JSON output for scripting"
-    echo "  $0 --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 1048576 --num-qps 4 --iterations 5000 --json"
+    echo "  $0 -n my-namespace --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 1048576 --json"
     echo ""
     echo "  # Test with GPU and bi-directional"
     echo "  $0 --src pod1:mlx5_0:0 --dst pod2:mlx5_1:1 --msg-size 1048576 --num-qps 4 --duration 30 --bi-directional"
@@ -72,13 +78,14 @@ while [[ $# -gt 0 ]]; do
         --iterations)
             iterations="$2"
             use_iterations=true
+            iterations_set=true
             shift 2
             ;;
         --bi-directional)
             bi_directional=true
             shift
             ;;
-        --namespace)
+        -n|--namespace)
             namespace="$2"
             shift 2
             ;;
@@ -97,20 +104,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate required arguments
-if [ -z "$src_arg" ] || [ -z "$dst_arg" ] || [ -z "$msg_size" ] || [ -z "$num_qps" ]; then
+if [ -z "$src_arg" ] || [ -z "$dst_arg" ] || [ -z "$msg_size" ]; then
     echo -e "${RED}Error: Missing required arguments${NC}"
     usage
 fi
 
-# Validate that either duration or iterations is specified (but not both)
-if [ -z "$duration" ] && [ -z "$iterations" ]; then
-    echo -e "${RED}Error: Either --duration or --iterations must be specified${NC}"
+# Validate that duration and iterations are not both specified
+if [ ! -z "$duration" ] && [ "$iterations_set" = true ]; then
+    echo -e "${RED}Error: Cannot specify both --duration and --iterations${NC}"
     usage
 fi
 
-if [ ! -z "$duration" ] && [ ! -z "$iterations" ]; then
-    echo -e "${RED}Error: Cannot specify both --duration and --iterations${NC}"
-    usage
+# If duration is specified, switch to duration mode
+if [ ! -z "$duration" ]; then
+    use_iterations=false
 fi
 
 # Parse source arguments (pod:hca:gpu or pod:hca)
