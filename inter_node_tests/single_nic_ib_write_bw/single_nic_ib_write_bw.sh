@@ -185,6 +185,23 @@ get_interface_ip() {
     echo "$ip"
 }
 
+# Function to get the NUMA node for a given HCA on a pod
+get_numa_node_for_hca() {
+    local pod=$1
+    local hca_id=$2
+    local ns=$3
+    
+    # Query the NUMA node from sysfs
+    local numa_node=$(kubectl exec -n "$ns" "$pod" -- cat /sys/class/infiniband/"$hca_id"/device/numa_node 2>/dev/null)
+    
+    # If numa_node is -1 or empty, default to 0
+    if [ -z "$numa_node" ] || [ "$numa_node" = "-1" ]; then
+        numa_node="0"
+    fi
+    
+    echo "$numa_node"
+}
+
 # Step 1: Find the network interface for the destination HCA
 if [ "$json_output" = false ]; then
     echo -e "${BLUE}[1/5]${NC} Finding network interface for destination HCA ${YELLOW}$dst_hca${NC} on pod ${GREEN}$dst_pod${NC}..."
@@ -218,12 +235,18 @@ if [ "$json_output" = false ]; then
     echo -e "${BLUE}[3/5]${NC} Starting ib_write_bw server on destination pod ${GREEN}$dst_pod${NC}..."
 fi
 
-# Build server command with JSON output
+# Get NUMA node for destination HCA
+dst_numa=$(get_numa_node_for_hca "$dst_pod" "$dst_hca" "$namespace")
+if [ "$json_output" = false ]; then
+    echo -e "      → HCA ${YELLOW}$dst_hca${NC} is on NUMA node ${YELLOW}$dst_numa${NC}"
+fi
+
+# Build server command with JSON output and NUMA binding
 server_json_file="/tmp/ib_server_result_$$.json"
 if [ "$use_iterations" = true ]; then
-    server_cmd="ib_write_bw -d $dst_hca -s $msg_size -q $num_qps -n $iterations --report_gbits --out_json --out_json_file=$server_json_file"
+    server_cmd="numactl --cpunodebind=$dst_numa --membind=$dst_numa ib_write_bw -d $dst_hca -s $msg_size -q $num_qps -n $iterations --report_gbits --out_json --out_json_file=$server_json_file"
 else
-    server_cmd="ib_write_bw -d $dst_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$server_json_file"
+    server_cmd="numactl --cpunodebind=$dst_numa --membind=$dst_numa ib_write_bw -d $dst_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$server_json_file"
 fi
 if [ ! -z "$dst_gpu" ]; then
     server_cmd="$server_cmd --use_cuda=$dst_gpu"
@@ -259,12 +282,18 @@ if [ "$json_output" = false ]; then
     echo -e "${BLUE}[4/5]${NC} Starting ib_write_bw client on source pod ${GREEN}$src_pod${NC}..."
 fi
 
-# Build client command with JSON output
+# Get NUMA node for source HCA
+src_numa=$(get_numa_node_for_hca "$src_pod" "$src_hca" "$namespace")
+if [ "$json_output" = false ]; then
+    echo -e "      → HCA ${YELLOW}$src_hca${NC} is on NUMA node ${YELLOW}$src_numa${NC}"
+fi
+
+# Build client command with JSON output and NUMA binding
 client_json_file="/tmp/ib_client_result_$$.json"
 if [ "$use_iterations" = true ]; then
-    client_cmd="ib_write_bw -d $src_hca -s $msg_size -q $num_qps -n $iterations --report_gbits --out_json --out_json_file=$client_json_file"
+    client_cmd="numactl --cpunodebind=$src_numa --membind=$src_numa ib_write_bw -d $src_hca -s $msg_size -q $num_qps -n $iterations --report_gbits --out_json --out_json_file=$client_json_file"
 else
-    client_cmd="ib_write_bw -d $src_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$client_json_file"
+    client_cmd="numactl --cpunodebind=$src_numa --membind=$src_numa ib_write_bw -d $src_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$client_json_file"
 fi
 if [ ! -z "$src_gpu" ]; then
     client_cmd="$client_cmd --use_cuda=$src_gpu"

@@ -41,6 +41,9 @@ class TestPair:
     dst_iface: str = ""
     dst_ip: str = ""
     port: int = BASE_PORT  # Port for this test (unique per dst_pod)
+    # NUMA nodes for CPU/memory binding
+    src_numa: int = 0
+    dst_numa: int = 0
 
 
 @dataclass
@@ -133,6 +136,24 @@ def get_interface_ip(namespace: str, pod: str, iface: str) -> Optional[str]:
     return None
 
 
+def get_numa_node_for_hca(namespace: str, pod: str, hca_id: str) -> int:
+    """Get the NUMA node for a given HCA on a pod.
+    
+    Returns the NUMA node number, defaulting to 0 if not found or -1.
+    """
+    command = f"cat /sys/class/infiniband/{hca_id}/device/numa_node 2>/dev/null || echo 0"
+    
+    success, output = run_kubectl_command(namespace, pod, command)
+    if success and output:
+        try:
+            numa_node = int(output.strip())
+            # -1 means no NUMA affinity, default to 0
+            return 0 if numa_node == -1 else numa_node
+        except ValueError:
+            return 0
+    return 0
+
+
 def start_ib_server(
     namespace: str,
     pair: TestPair,
@@ -152,12 +173,16 @@ def start_ib_server(
     else:
         test_param = f"-D {duration}"
     
-    cmd = f"ib_write_bw -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    # Build ib_write_bw command with NUMA binding
+    ib_cmd = f"ib_write_bw -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
     if pair.dst_gpu:
-        cmd += f" --use_cuda={pair.dst_gpu}"
+        ib_cmd += f" --use_cuda={pair.dst_gpu}"
     if bi_directional:
-        cmd += " -b --report-both"
+        ib_cmd += " -b --report-both"
+    
+    # Wrap with numactl for NUMA-aware execution
+    cmd = f"numactl --cpunodebind={pair.dst_numa} --membind={pair.dst_numa} {ib_cmd}"
     
     proc = run_kubectl_background(namespace, pair.dst_pod, cmd)
     return proc, json_file
@@ -182,14 +207,18 @@ def run_ib_client(
     else:
         test_param = f"-D {duration}"
     
-    cmd = f"ib_write_bw -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    # Build ib_write_bw command
+    ib_cmd = f"ib_write_bw -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
     if pair.src_gpu:
-        cmd += f" --use_cuda={pair.src_gpu}"
+        ib_cmd += f" --use_cuda={pair.src_gpu}"
     if bi_directional:
-        cmd += " -b --report-both"
+        ib_cmd += " -b --report-both"
     
-    cmd += f" {pair.dst_ip}"
+    ib_cmd += f" {pair.dst_ip}"
+    
+    # Wrap with numactl for NUMA-aware execution
+    cmd = f"numactl --cpunodebind={pair.src_numa} --membind={pair.src_numa} {ib_cmd}"
     
     # Calculate timeout: for duration mode use duration + buffer, for iterations estimate based on iterations
     if num_iters is not None:
@@ -253,7 +282,7 @@ def assign_ports(pairs: list[TestPair]) -> None:
 
 
 def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console]) -> bool:
-    """Discover network interfaces and IPs for all test pairs."""
+    """Discover network interfaces, IPs, and NUMA nodes for all test pairs."""
     if console:
         console.print("\n[bold cyan]📡 Discovering network endpoints...[/bold cyan]\n")
     
@@ -284,8 +313,12 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
             continue
         pair.dst_ip = ip
         
+        # Get NUMA nodes for source and destination HCAs
+        pair.src_numa = get_numa_node_for_hca(namespace, pair.src_pod, pair.src_hca)
+        pair.dst_numa = get_numa_node_for_hca(namespace, pair.dst_pod, pair.dst_hca)
+        
         if console:
-            console.print(f"    [green]✓[/green] {iface} → {ip}")
+            console.print(f"    [green]✓[/green] {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
     
     return all_success
 
