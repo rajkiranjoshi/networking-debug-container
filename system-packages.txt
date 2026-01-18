@@ -11,3 +11,4 @@ iperf3
 tcpdump
 iputils-ping
 cpufrequtils
+numactl
