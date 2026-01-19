@@ -1,0 +1,22 @@
+{
+    "namespace": "raj-network-debug",
+    "msg_size": 4194304,
+    "num_qps": 4,
+    "num_iters": 5000,
+    "bi_directional": false,
+    "use_hugepages": false,
+    "test_pairs": [
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_0",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_0"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_9",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_0"
+        }
+    ]
+}
