@@ -162,7 +162,8 @@ def start_ib_server(
     num_qps: int,
     duration: Optional[int],
     num_iters: Optional[int],
-    bi_directional: bool
+    bi_directional: bool,
+    use_hugepages: bool = False
 ) -> tuple[subprocess.Popen, str]:
     """Start ib_write_bw server on destination pod. Returns (process, json_file_path)."""
     json_file = f"/tmp/ib_server_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
@@ -176,6 +177,8 @@ def start_ib_server(
     # Build ib_write_bw command with NUMA binding
     ib_cmd = f"ib_write_bw -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
+    if use_hugepages:
+        ib_cmd += " --use_hugepages"
     if pair.dst_gpu:
         ib_cmd += f" --use_cuda={pair.dst_gpu}"
     if bi_directional:
@@ -196,7 +199,8 @@ def run_ib_client(
     num_qps: int,
     duration: Optional[int],
     num_iters: Optional[int],
-    bi_directional: bool
+    bi_directional: bool,
+    use_hugepages: bool = False
 ) -> tuple[bool, str, str]:
     """Run ib_write_bw client on source pod. Returns (success, json_output, error_msg)."""
     json_file = f"/tmp/ib_client_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
@@ -210,6 +214,8 @@ def run_ib_client(
     # Build ib_write_bw command
     ib_cmd = f"ib_write_bw -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
+    if use_hugepages:
+        ib_cmd += " --use_hugepages"
     if pair.src_gpu:
         ib_cmd += f" --use_cuda={pair.src_gpu}"
     if bi_directional:
@@ -220,13 +226,13 @@ def run_ib_client(
     # Wrap with numactl for NUMA-aware execution
     cmd = f"numactl --cpunodebind={pair.src_numa} --membind={pair.src_numa} {ib_cmd}"
     
-    # Calculate timeout: for duration mode use duration + buffer, for iterations estimate based on iterations
+    # Timeout is a safety net for catastrophic failures (pod crash, network partition, etc.)
+    # Under normal operation, ib_write_bw clients complete their iterations/duration and exit naturally.
+    # Set a generous timeout: 10 minutes for iterations mode, duration + 5 min for duration mode.
     if num_iters is not None:
-        # Estimate ~1ms per iteration for large messages, with generous buffer
-        estimated_time = max(30, (num_iters / 1000) + 60)
-        timeout = int(estimated_time)
+        timeout = 600  # 10 minutes - should be more than enough for any reasonable iteration count
     else:
-        timeout = duration + 30
+        timeout = duration + 300  # duration + 5 minutes buffer
     
     success, output = run_kubectl_command(namespace, pair.src_pod, cmd, timeout=timeout)
     
@@ -331,6 +337,7 @@ def run_multi_nic_test(
     duration: Optional[int],
     num_iters: Optional[int],
     bi_directional: bool,
+    use_hugepages: bool,
     console: Optional[Console]
 ) -> list[TestResult]:
     """Run ib_write_bw tests across all pairs simultaneously."""
@@ -355,7 +362,7 @@ def run_multi_nic_test(
             continue
         
         proc, json_file = start_ib_server(
-            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional
+            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages
         )
         server_procs.append(proc)
         server_json_files.append(json_file)
@@ -383,7 +390,7 @@ def run_multi_nic_test(
             
             future = executor.submit(
                 run_ib_client,
-                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional
+                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages
             )
             client_futures[future] = (i, pair)
         
@@ -608,6 +615,7 @@ def load_config(config_path: str) -> dict:
     config.setdefault('msg_size', 1048576)  # 1MB default
     config.setdefault('num_qps', 4)
     config.setdefault('bi_directional', False)
+    config.setdefault('use_hugepages', False)
     
     return config
 
@@ -684,6 +692,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     duration = config.get('duration')
     num_iters = config.get('num_iters')
     bi_directional = config['bi_directional']
+    use_hugepages = config['use_hugepages']
     
     # Parse test pairs
     pairs = []
@@ -720,7 +729,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     # Step 2: Run tests
     start_time = time.time()
     results = run_multi_nic_test(
-        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, console
+        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, console
     )
     elapsed_time = time.time() - start_time
     

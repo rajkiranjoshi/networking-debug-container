@@ -1,9 +1,10 @@
 {
     "namespace": "raj-network-debug",
-    "msg_size": 524288,
+    "msg_size": 4194304,
     "num_qps": 4,
     "num_iters": 5000,
     "bi_directional": false,
+    "use_hugepages": false,
     "test_pairs": [
         {
             "src_pod": "networking-debug-pod-10.0.65.77",
