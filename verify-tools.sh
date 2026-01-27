@@ -20,6 +20,31 @@ echo -e "${BLUE}Verifying Tools in: $IMAGE_TAG${NC}"
 echo -e "${BLUE}============================================${NC}"
 echo ""
 
+# Detect available GPUs on the host system
+HAS_NVIDIA_GPU=false
+HAS_AMD_GPU=false
+NVIDIA_DOCKER_FLAGS=""
+AMD_DOCKER_FLAGS=""
+
+# Check for NVIDIA GPU (nvidia-smi available and working)
+if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    HAS_NVIDIA_GPU=true
+    NVIDIA_DOCKER_FLAGS="--gpus=all"
+    echo -e "${GREEN}✓${NC} NVIDIA GPU detected on host"
+fi
+
+# Check for AMD GPU (/dev/kfd and /dev/dri exist)
+if [ -e /dev/kfd ] && [ -d /dev/dri ]; then
+    HAS_AMD_GPU=true
+    AMD_DOCKER_FLAGS="--device=/dev/kfd --device=/dev/dri --group-add video"
+    echo -e "${GREEN}✓${NC} AMD GPU detected on host"
+fi
+
+if ! $HAS_NVIDIA_GPU && ! $HAS_AMD_GPU; then
+    echo -e "${YELLOW}⚠${NC} No GPU detected on host (GPU-specific tests will be skipped)"
+fi
+echo ""
+
 PASSED=0
 FAILED=0
 WARNINGS=0
@@ -72,62 +97,75 @@ check_library_deps() {
     fi
 }
 
-check_perftest_cuda_support() {
-    local cmd=$1
-    local description=$2
-    
-    echo -n "  Checking CUDA support for $description... "
-    local help_output=$(docker run --rm "$IMAGE_TAG" "$cmd" --help 2>&1)
-    
-    # Check for CUDA-related options in help output
-    if echo "$help_output" | grep -qiE "(--use_cuda|CUDA|--cuda_device|use_cuda_bus_id|GPU)"; then
-        echo -e "${GREEN}CUDA ENABLED${NC}"
-        # Show specific CUDA options available
-        local cuda_opts=$(echo "$help_output" | grep -iE "(cuda|gpu)" | head -3)
-        if [ -n "$cuda_opts" ]; then
-            echo "    CUDA options found:"
-            echo "$cuda_opts" | while read -r line; do
-                echo "      $line"
-            done
-        fi
-        return 0
-    else
-        echo -e "${RED}NO CUDA SUPPORT${NC}"
-        echo -e "    ${YELLOW}⚠ Tool appears to be compiled without CUDA support${NC}"
-        ((WARNINGS++))
-        return 1
-    fi
-}
+# Test GPU-compiled perftest binaries (CUDA + ROCm) - Table format
+echo -e "${BLUE}=== GPU-Compiled Perftest Tools (CUDA + ROCm) ===${NC}"
+echo ""
 
-# Test CUDA-compiled perftest binaries
-echo -e "${BLUE}=== CUDA-Compiled Perftest Tools ===${NC}"
 PERFTEST_TOOLS=(
-    "ib_write_bw:RDMA Write Bandwidth Test"
-    "ib_read_bw:RDMA Read Bandwidth Test"
-    "ib_send_bw:RDMA Send Bandwidth Test"
-    "ib_write_lat:RDMA Write Latency Test"
-    "ib_read_lat:RDMA Read Latency Test"
-    "ib_send_lat:RDMA Send Latency Test"
-    "ib_atomic_bw:RDMA Atomic Bandwidth Test"
-    "ib_atomic_lat:RDMA Atomic Latency Test"
+    "ib_write_bw:Write BW"
+    "ib_read_bw:Read BW"
+    "ib_send_bw:Send BW"
+    "ib_write_lat:Write Lat"
+    "ib_read_lat:Read Lat"
+    "ib_send_lat:Send Lat"
+    "ib_atomic_bw:Atomic BW"
+    "ib_atomic_lat:Atomic Lat"
 )
+
+# Print table header
+echo "  Tool            Available    Dependencies    CUDA-enabled    ROCm-enabled"
+echo "  --------------- ------------ --------------- --------------- ---------------"
 
 for tool in "${PERFTEST_TOOLS[@]}"; do
     IFS=':' read -r cmd desc <<< "$tool"
-    if check_command "$cmd" "$desc"; then
-        # Check if binary location is correct (should be in /usr/local/bin for CUDA version)
+    
+    # Check if command exists
+    if docker run --rm "$IMAGE_TAG" which "$cmd" &>/dev/null; then
+        STATUS="${GREEN}✓${NC}"
+        ((PASSED++))
+        
+        # Check binary location
         BIN_PATH=$(docker run --rm "$IMAGE_TAG" which "$cmd" 2>/dev/null)
-        if [[ "$BIN_PATH" == "/usr/local/bin/"* ]]; then
-            echo "    Location: $BIN_PATH (CUDA-compiled)"
-        else
-            echo -e "    ${YELLOW}⚠ Location: $BIN_PATH (might be apt version)${NC}"
+        if [[ "$BIN_PATH" != "/usr/local/bin/"* ]]; then
             ((WARNINGS++))
         fi
+        
         # Check library dependencies
-        check_library_deps "$BIN_PATH" "$cmd"
-        # Check if compiled with CUDA support
-        check_perftest_cuda_support "$cmd" "$desc"
+        MISSING_DEPS=$(docker run --rm "$IMAGE_TAG" ldd "$BIN_PATH" 2>/dev/null | grep "not found")
+        if [ -z "$MISSING_DEPS" ]; then
+            DEPS="${GREEN}✓${NC}"
+        else
+            DEPS="${RED}✗${NC}"
+            ((WARNINGS++))
+        fi
+        
+        # Get help output once for both checks
+        HELP_OUTPUT=$(docker run --rm "$IMAGE_TAG" "$cmd" --help 2>&1)
+        
+        # Check CUDA support
+        if echo "$HELP_OUTPUT" | grep -qiE "(--use_cuda|use_cuda_bus_id)"; then
+            CUDA="${GREEN}✓${NC}"
+        else
+            CUDA="${RED}✗${NC}"
+            ((WARNINGS++))
+        fi
+        
+        # Check ROCm support
+        if echo "$HELP_OUTPUT" | grep -qiE "(--use_rocm|rocm_device|use_rocm_bus_id)"; then
+            ROCM="${GREEN}✓${NC}"
+        else
+            ROCM="${RED}✗${NC}"
+            ((WARNINGS++))
+        fi
+    else
+        STATUS="${RED}✗${NC}"
+        DEPS="-"
+        CUDA="-"
+        ROCM="-"
+        ((FAILED++))
     fi
+    
+    echo -e "  $(printf '%-15s' "$cmd") $STATUS            $DEPS               $CUDA               $ROCM"
 done
 echo ""
 
@@ -214,16 +252,73 @@ for lib in "${CUDA_LIBS[@]}"; do
 done
 
 # Check for nvidia-smi (requires --gpus=all to access NVIDIA driver)
-echo -n "Checking nvidia-smi (with GPU access)... "
-if docker run --rm --gpus=all "$IMAGE_TAG" nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
-    GPU_NAME=$(docker run --rm --gpus=all "$IMAGE_TAG" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    echo -e "${GREEN}✓${NC} NVIDIA System Management Interface (nvidia-smi)"
-    echo "    GPU detected: $GPU_NAME"
-    ((PASSED++))
+if $HAS_NVIDIA_GPU; then
+    echo -n "Checking nvidia-smi (with GPU access)... "
+    if docker run --rm $NVIDIA_DOCKER_FLAGS "$IMAGE_TAG" nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+        GPU_NAME=$(docker run --rm $NVIDIA_DOCKER_FLAGS "$IMAGE_TAG" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        echo -e "${GREEN}✓${NC} NVIDIA System Management Interface (nvidia-smi)"
+        echo "    GPU detected: $GPU_NAME"
+        ((PASSED++))
+    else
+        echo -e "${YELLOW}⚠${NC} NVIDIA System Management Interface (nvidia-smi)"
+        echo "    Could not access GPU from container"
+        ((WARNINGS++))
+    fi
 else
-    echo -e "${YELLOW}⚠${NC} NVIDIA System Management Interface (nvidia-smi)"
-    echo "    Could not access GPU (host may not have NVIDIA driver or GPU)"
-    ((WARNINGS++))
+    echo -e "${YELLOW}⚠${NC} nvidia-smi check skipped (no NVIDIA GPU on host)"
+fi
+echo ""
+
+# Test ROCm runtime
+echo -e "${BLUE}=== ROCm Runtime ===${NC}"
+ROCM_LIBS=(
+    "/opt/rocm/lib/libamdhip64.so:AMD HIP Runtime Library"
+)
+
+for lib in "${ROCM_LIBS[@]}"; do
+    IFS=':' read -r file desc <<< "$lib"
+    
+    # Check for library (may have version suffix)
+    if docker run --rm "$IMAGE_TAG" sh -c "ls ${file}* 2>/dev/null | head -1" | grep -q .; then
+        FOUND_LIB=$(docker run --rm "$IMAGE_TAG" sh -c "ls ${file}* 2>/dev/null | head -1")
+        echo -e "${GREEN}✓${NC} $desc ($FOUND_LIB)"
+        ((PASSED++))
+    else
+        echo -e "${RED}✗${NC} $desc ($file) - NOT FOUND"
+        ((FAILED++))
+    fi
+done
+
+# Check for amd-smi (AMD System Management Interface - modern AMD GPU monitoring tool)
+echo -n "Checking amd-smi... "
+if docker run --rm "$IMAGE_TAG" which amd-smi &>/dev/null; then
+    echo -e "${GREEN}✓${NC} AMD System Management Interface (amd-smi)"
+    ((PASSED++))
+    # Show version
+    AMD_SMI_VERSION=$(docker run --rm "$IMAGE_TAG" amd-smi version 2>/dev/null | grep -E "^[0-9]|AMDSMI|Tool" | head -1)
+    if [ -n "$AMD_SMI_VERSION" ]; then
+        echo "    Version: $AMD_SMI_VERSION"
+    fi
+    # Try to query GPUs if AMD GPU is available on host
+    if $HAS_AMD_GPU; then
+        if docker run --rm $AMD_DOCKER_FLAGS "$IMAGE_TAG" amd-smi list &>/dev/null 2>&1; then
+            GPU_INFO=$(docker run --rm $AMD_DOCKER_FLAGS "$IMAGE_TAG" amd-smi list 2>/dev/null | grep -E "GPU|card|Card")
+            if [ -n "$GPU_INFO" ]; then
+                GPU_COUNT=$(echo "$GPU_INFO" | wc -l)
+                echo "    AMD GPU(s) detected: $GPU_COUNT"
+                echo "$GPU_INFO" | while read -r line; do
+                    echo "      $line"
+                done
+            fi
+        else
+            echo "    (Could not query AMD GPU from container)"
+        fi
+    else
+        echo "    (No AMD GPU on host - GPU query skipped)"
+    fi
+else
+    echo -e "${RED}✗${NC} AMD System Management Interface (amd-smi) - NOT FOUND"
+    ((FAILED++))
 fi
 echo ""
 
@@ -279,7 +374,22 @@ if [ $FAILED -eq 0 ]; then
     
     echo ""
     echo "Next steps:"
-    echo "  1. Test interactively: docker run --rm -it --gpus=all --network=host $IMAGE_TAG"
+    echo "  1. Test interactively:"
+    if $HAS_NVIDIA_GPU && $HAS_AMD_GPU; then
+        echo "     # For NVIDIA GPU:"
+        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS --network=host $IMAGE_TAG"
+        echo "     # For AMD GPU:"
+        echo "     docker run --rm -it $AMD_DOCKER_FLAGS --network=host $IMAGE_TAG"
+    elif $HAS_NVIDIA_GPU; then
+        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS --network=host $IMAGE_TAG"
+    elif $HAS_AMD_GPU; then
+        echo "     docker run --rm -it $AMD_DOCKER_FLAGS --network=host $IMAGE_TAG"
+    else
+        echo "     # For NVIDIA GPU systems:"
+        echo "     docker run --rm -it --gpus=all --network=host $IMAGE_TAG"
+        echo "     # For AMD GPU systems:"
+        echo "     docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video --network=host $IMAGE_TAG"
+    fi
     echo "  2. Run your specific workloads"
     echo "  3. Deploy if everything works"
     exit 0

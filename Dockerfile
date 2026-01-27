@@ -1,5 +1,5 @@
 # ============================================================================
-# Stage 1: Builder stage with full CUDA toolkit and build dependencies
+# Stage 1: Builder stage with full CUDA/ROCm toolkits and build dependencies
 # ============================================================================
 FROM ubuntu:24.04 AS builder
 
@@ -26,6 +26,18 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
 ENV PATH=/usr/local/cuda-12.8/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
 
+# Install ROCm Toolkit (needed for building with ROCm/AMD GPU support)
+RUN wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor -o /usr/share/keyrings/rocm-archive-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm-archive-keyring.gpg] https://repo.radeon.com/rocm/apt/6.3 noble main" > /etc/apt/sources.list.d/rocm.list && \
+    echo 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' > /etc/apt/preferences.d/rocm-pin-600 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        rocm-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/opt/rocm/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH}
+
 # Install Mellanox OFED (including development libraries needed for building)
 RUN wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | gpg --dearmor -o /usr/share/keyrings/mellanox-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/mellanox-archive-keyring.gpg] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
@@ -50,16 +62,18 @@ RUN apt-get update && \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-# Build perftest with CUDA support
+# Build perftest with both CUDA and ROCm support
 RUN git clone https://github.com/linux-rdma/perftest.git /tmp/perftest && \
     cd /tmp/perftest && \
     git checkout tags/25.10.0-0.128 && \
     ./autogen.sh && \
     export CUDA_H_PATH=/usr/local/cuda/include/cuda.h && \
-    ./configure --prefix=/usr/local/perftest-cuda --enable-cudart && \
+    ./configure --prefix=/usr/local/perftest-gpu \
+        --enable-cuda --with-cuda=/usr/local/cuda \
+        --enable-rocm --with-rocm=/opt/rocm && \
     make -j$(nproc) && \
     make install && \
-    echo "Perftest binaries built with CUDA support"
+    echo "Perftest binaries built with CUDA and ROCm support"
 
 # ============================================================================
 # Stage 2: Final runtime image with only necessary components
@@ -90,8 +104,25 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
     # Create unversioned symlink for libcudart.so (runtime package only has versioned libs)
     ln -sf /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so
 
-ENV PATH=/usr/local/cuda-12.8/bin:/usr/sbin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
+# Install ROCm runtime libraries (hip-runtime-amd includes necessary AMD GPU runtime)
+# Install amd-smi for AMD GPU monitoring (modern replacement for rocm-smi)
+# Note: amd-smi-lib provides the library, we also need python3 and dependencies for the CLI wrapper
+RUN wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor -o /usr/share/keyrings/rocm-archive-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm-archive-keyring.gpg] https://repo.radeon.com/rocm/apt/6.3 noble main" > /etc/apt/sources.list.d/rocm.list && \
+    echo 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' > /etc/apt/preferences.d/rocm-pin-600 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        hip-runtime-amd \
+        rocm-core \
+        amd-smi-lib \
+        python3 \
+        python3-pip \
+        python3-yaml && \
+    pip3 install --break-system-packages amdsmi && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/usr/local/cuda-12.8/bin:/opt/rocm/bin:/usr/sbin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/opt/rocm/lib:${LD_LIBRARY_PATH}
 
 # Install Mellanox OFED - ONLY runtime packages and essential tools
 # Instead of mlnx-ofed-all, we install specific packages we need
@@ -120,8 +151,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends $(cat /tmp/system-packages.txt) && \
     rm -rf /var/lib/apt/lists/* /tmp/system-packages.txt
 
-# Copy CUDA-compiled perftest binaries from builder stage
-COPY --from=builder /usr/local/perftest-cuda/bin/* /usr/local/bin/
+# Copy CUDA+ROCm-compiled perftest binaries from builder stage
+COPY --from=builder /usr/local/perftest-gpu/bin/* /usr/local/bin/
 
 # Verify perftest binaries work
 RUN echo "Verifying perftest binaries..." && \
