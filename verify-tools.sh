@@ -20,11 +20,13 @@ echo -e "${BLUE}Verifying Tools in: $IMAGE_TAG${NC}"
 echo -e "${BLUE}============================================${NC}"
 echo ""
 
-# Detect available GPUs on the host system
+# Detect available GPUs and InfiniBand on the host system
 HAS_NVIDIA_GPU=false
 HAS_AMD_GPU=false
+HAS_INFINIBAND=false
 NVIDIA_DOCKER_FLAGS=""
 AMD_DOCKER_FLAGS=""
+IB_DOCKER_FLAGS=""
 
 # Check for NVIDIA GPU (nvidia-smi available and working)
 if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
@@ -38,6 +40,21 @@ if [ -e /dev/kfd ] && [ -d /dev/dri ]; then
     HAS_AMD_GPU=true
     AMD_DOCKER_FLAGS="--device=/dev/kfd --device=/dev/dri --group-add video"
     echo -e "${GREEN}✓${NC} AMD GPU detected on host"
+fi
+
+# Check for InfiniBand devices
+# RDMA requires: device access, IPC_LOCK capability, and unlimited memlock
+if [ -d /dev/infiniband ]; then
+    HAS_INFINIBAND=true
+    # Build device flags for each InfiniBand device (uverbs*, rdma_cm, etc.)
+    IB_DEVICES=""
+    for dev in /dev/infiniband/*; do
+        if [ -e "$dev" ]; then
+            IB_DEVICES="$IB_DEVICES --device=$dev"
+        fi
+    done
+    IB_DOCKER_FLAGS="$IB_DEVICES --cap-add=IPC_LOCK --ulimit memlock=-1:-1"
+    echo -e "${GREEN}✓${NC} InfiniBand devices detected on host (/dev/infiniband)"
 fi
 
 if ! $HAS_NVIDIA_GPU && ! $HAS_AMD_GPU; then
@@ -377,18 +394,18 @@ if [ $FAILED -eq 0 ]; then
     echo "  1. Test interactively:"
     if $HAS_NVIDIA_GPU && $HAS_AMD_GPU; then
         echo "     # For NVIDIA GPU:"
-        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS --network=host $IMAGE_TAG"
+        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS $IB_DOCKER_FLAGS --network=host $IMAGE_TAG"
         echo "     # For AMD GPU:"
-        echo "     docker run --rm -it $AMD_DOCKER_FLAGS --network=host $IMAGE_TAG"
+        echo "     docker run --rm -it $AMD_DOCKER_FLAGS $IB_DOCKER_FLAGS --network=host $IMAGE_TAG"
     elif $HAS_NVIDIA_GPU; then
-        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS --network=host $IMAGE_TAG"
+        echo "     docker run --rm -it $NVIDIA_DOCKER_FLAGS $IB_DOCKER_FLAGS --network=host $IMAGE_TAG"
     elif $HAS_AMD_GPU; then
-        echo "     docker run --rm -it $AMD_DOCKER_FLAGS --network=host $IMAGE_TAG"
+        echo "     docker run --rm -it $AMD_DOCKER_FLAGS $IB_DOCKER_FLAGS --network=host $IMAGE_TAG"
     else
-        echo "     # For NVIDIA GPU systems:"
-        echo "     docker run --rm -it --gpus=all --network=host $IMAGE_TAG"
-        echo "     # For AMD GPU systems:"
-        echo "     docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video --network=host $IMAGE_TAG"
+        echo "     # For NVIDIA GPU systems (add InfiniBand flags if available):"
+        echo "     docker run --rm -it --gpus=all --device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1:-1 --network=host $IMAGE_TAG"
+        echo "     # For AMD GPU systems (add InfiniBand flags if available):"
+        echo "     docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video --device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1:-1 --network=host $IMAGE_TAG"
     fi
     echo "  2. Run your specific workloads"
     echo "  3. Deploy if everything works"
