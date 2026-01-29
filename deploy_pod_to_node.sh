@@ -1,14 +1,19 @@
 #!/bin/bash
 
 # Parse arguments
-gpu_count=0
+nvidia_gpu_count=0
+amd_gpu_count=0
 node_name=""
 namespace="default"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --request-gpus)
-            gpu_count="$2"
+        --request-nvidia-gpus)
+            nvidia_gpu_count="$2"
+            shift 2
+            ;;
+        --request-amd-gpus)
+            amd_gpu_count="$2"
             shift 2
             ;;
         -n|--namespace)
@@ -20,7 +25,7 @@ while [[ $# -gt 0 ]]; do
                 node_name="$1"
             else
                 echo "Error: Unknown argument '$1'"
-                echo "Usage: $0 <node_name> [--namespace <namespace>] [--request-gpus <N>]"
+                echo "Usage: $0 <node_name> [--namespace <namespace>] [--request-nvidia-gpus <N>] [--request-amd-gpus <N>]"
                 exit 1
             fi
             shift
@@ -29,12 +34,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$node_name" ]; then
-    echo "Usage: $0 <node_name> [--namespace <namespace>] [--request-gpus <N>]"
+    echo "Usage: $0 <node_name> [--namespace <namespace>] [--request-nvidia-gpus <N>] [--request-amd-gpus <N>]"
     echo ""
     echo "Arguments:"
-    echo "  <node_name>              Name of the Kubernetes node to deploy the pod on"
-    echo "  -n, --namespace <ns>     Optional: Kubernetes namespace (default: default)"
-    echo "  --request-gpus <N>       Optional: Number of GPUs to request (default: 0)"
+    echo "  <node_name>                  Name of the Kubernetes node to deploy the pod on"
+    echo "  -n, --namespace <ns>         Optional: Kubernetes namespace (default: default)"
+    echo "  --request-nvidia-gpus <N>    Optional: Number of NVIDIA GPUs to request (default: 0)"
+    echo "  --request-amd-gpus <N>       Optional: Number of AMD GPUs to request (default: 0)"
     exit 1
 fi
 
@@ -59,8 +65,14 @@ if kubectl get pod "$pod_name" -n "$namespace" &>/dev/null; then
 fi
 
 # Apply manifest with dynamic podName, nodeName, namespace, and GPU count substitution
-echo "Deploying pod '$pod_name' to node: $node_name in namespace: $namespace (requesting $gpu_count GPUs)"
-sed -e "s/REPLACE_POD_NAME/$pod_name/" -e "s/REPLACE_NODE_NAME/$node_name/" -e "s/REPLACE_NAMESPACE/$namespace/" -e "s/REPLACE_GPU_COUNT/$gpu_count/" networking-debug-pod.yaml | kubectl apply -f -
+echo "Deploying pod '$pod_name' to node: $node_name in namespace: $namespace"
+echo "  Requesting: $nvidia_gpu_count NVIDIA GPU(s), $amd_gpu_count AMD GPU(s)"
+sed -e "s/REPLACE_POD_NAME/$pod_name/" \
+    -e "s/REPLACE_NODE_NAME/$node_name/" \
+    -e "s/REPLACE_NAMESPACE/$namespace/" \
+    -e "s/REPLACE_NVIDIA_GPU_COUNT/$nvidia_gpu_count/" \
+    -e "s/REPLACE_AMD_GPU_COUNT/$amd_gpu_count/" \
+    networking-debug-pod.yaml | kubectl apply -f -
 
 echo "✓ Pod deployment initiated. Check status with: kubectl get pod $pod_name -n $namespace"
 
