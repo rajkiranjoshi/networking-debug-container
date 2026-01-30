@@ -17,14 +17,16 @@ use_iterations=true
 iterations=5000
 iterations_set=false
 num_qps=1
+tos=""
 
 # Function to print usage
 usage() {
-    echo "Usage: $0 --src <pod>:<hca>[:<gpu>] --dst <pod>:<hca>[:<gpu>] --msg-size <size> [options]"
+    echo "Usage: $0 --src <pod>:<hca>[:<gpu_type>:<gpu>] --dst <pod>:<hca>[:<gpu_type>:<gpu>] --msg-size <size> [options]"
     echo ""
     echo "Arguments:"
-    echo "  --src <pod>:<hca>[:<gpu>]      Source pod name, HCA ID (e.g., mlx5_0), and optional GPU index"
-    echo "  --dst <pod>:<hca>[:<gpu>]      Destination pod name, HCA ID, and optional GPU index"
+    echo "  --src <pod>:<hca>[:[<gpu_type>:]<gpu>]  Source pod, HCA, and optional GPU (type: cuda or rocm)"
+    echo "  --dst <pod>:<hca>[:[<gpu_type>:]<gpu>]  Destination pod, HCA, and optional GPU"
+    echo "                                          GPU formats: pod:hca:0 (cuda default) or pod:hca:rocm:0"
     echo "  --msg-size <size>              Message size in bytes (e.g., 65536, 1048576)"
     echo "  --duration <sec>               Test duration in seconds (mutually exclusive with --iterations)"
     echo "  --iterations <n>               Number of iterations (default: 5000, mutually exclusive with --duration)"
@@ -32,6 +34,7 @@ usage() {
     echo "  --num-qps <n>                  Number of queue pairs (default: 1)"
     echo "  --bi-directional               Enable bi-directional bandwidth test (optional)"
     echo "  -n, --namespace <ns>           Kubernetes namespace (default: default)"
+    echo "  --tos <value>                  Type of Service value (0-255). Enables RDMA CM (-R)"
     echo "  --json                         Output results as parsable JSON (suppresses human-readable output)"
     echo ""
     echo "Examples:"
@@ -47,8 +50,14 @@ usage() {
     echo "  # JSON output for scripting"
     echo "  $0 -n my-namespace --src pod1:mlx5_0 --dst pod2:mlx5_1 --msg-size 1048576 --json"
     echo ""
-    echo "  # Test with GPU and bi-directional"
-    echo "  $0 --src pod1:mlx5_0:0 --dst pod2:mlx5_1:1 --msg-size 1048576 --num-qps 4 --duration 30 --bi-directional"
+    echo "  # Test with NVIDIA GPU (cuda is default)"
+    echo "  $0 --src pod1:mlx5_0:0 --dst pod2:mlx5_1:1 --msg-size 1048576 --num-qps 4"
+    echo ""
+    echo "  # Test with AMD GPU (explicit rocm type)"
+    echo "  $0 --src pod1:mlx5_0:rocm:0 --dst pod2:mlx5_1:rocm:1 --msg-size 1048576 --num-qps 4"
+    echo ""
+    echo "  # Test with bi-directional"
+    echo "  $0 --src pod1:mlx5_0:cuda:0 --dst pod2:mlx5_1:cuda:1 --msg-size 1048576 --bi-directional"
     exit 1
 }
 
@@ -93,6 +102,10 @@ while [[ $# -gt 0 ]]; do
             json_output=true
             shift
             ;;
+        --tos)
+            tos="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -120,27 +133,76 @@ if [ ! -z "$duration" ]; then
     use_iterations=false
 fi
 
-# Parse source arguments (pod:hca:gpu or pod:hca)
-IFS=':' read -r src_pod src_hca src_gpu <<< "$src_arg"
-if [ -z "$src_pod" ] || [ -z "$src_hca" ]; then
-    echo -e "${RED}Error: Invalid source format. Expected <pod>:<hca>[:<gpu>]${NC}"
-    exit 1
-fi
+# Function to parse endpoint argument (pod:hca or pod:hca:gpu or pod:hca:gpu_type:gpu)
+# Sets: _pod, _hca, _gpu_type, _gpu_idx
+parse_endpoint() {
+    local arg="$1"
+    local label="$2"
+    
+    # Split by colon
+    IFS=':' read -ra parts <<< "$arg"
+    local num_parts=${#parts[@]}
+    
+    _pod=""
+    _hca=""
+    _gpu_type=""
+    _gpu_idx=""
+    
+    if [ $num_parts -lt 2 ]; then
+        echo -e "${RED}Error: Invalid $label format. Expected <pod>:<hca>[:[<gpu_type>:]<gpu>]${NC}"
+        return 1
+    fi
+    
+    _pod="${parts[0]}"
+    _hca="${parts[1]}"
+    
+    if [ $num_parts -eq 3 ]; then
+        # Format: pod:hca:gpu (default to cuda)
+        _gpu_type="cuda"
+        _gpu_idx="${parts[2]}"
+    elif [ $num_parts -eq 4 ]; then
+        # Format: pod:hca:gpu_type:gpu
+        _gpu_type="${parts[2]}"
+        _gpu_idx="${parts[3]}"
+        
+        # Validate gpu_type
+        if [ "$_gpu_type" != "cuda" ] && [ "$_gpu_type" != "rocm" ]; then
+            echo -e "${RED}Error: Invalid GPU type '$_gpu_type' in $label. Expected 'cuda' or 'rocm'${NC}"
+            return 1
+        fi
+    elif [ $num_parts -gt 4 ]; then
+        echo -e "${RED}Error: Invalid $label format. Too many colons.${NC}"
+        return 1
+    fi
+    
+    return 0
+}
 
-# Parse destination arguments (pod:hca:gpu or pod:hca)
-IFS=':' read -r dst_pod dst_hca dst_gpu <<< "$dst_arg"
-if [ -z "$dst_pod" ] || [ -z "$dst_hca" ]; then
-    echo -e "${RED}Error: Invalid destination format. Expected <pod>:<hca>[:<gpu>]${NC}"
+# Parse source arguments
+if ! parse_endpoint "$src_arg" "source"; then
     exit 1
 fi
+src_pod="$_pod"
+src_hca="$_hca"
+src_gpu_type="$_gpu_type"
+src_gpu="$_gpu_idx"
+
+# Parse destination arguments
+if ! parse_endpoint "$dst_arg" "destination"; then
+    exit 1
+fi
+dst_pod="$_pod"
+dst_hca="$_hca"
+dst_gpu_type="$_gpu_type"
+dst_gpu="$_gpu_idx"
 
 # Print configuration (unless JSON output mode)
 if [ "$json_output" = false ]; then
     echo -e "${BLUE}========================================${NC}"
     echo -e "${BLUE}IB Write Bandwidth Test Configuration${NC}"
     echo -e "${BLUE}========================================${NC}"
-    echo -e "Source:      ${GREEN}$src_pod${NC} (HCA: $src_hca${src_gpu:+, GPU: $src_gpu})"
-    echo -e "Destination: ${GREEN}$dst_pod${NC} (HCA: $dst_hca${dst_gpu:+, GPU: $dst_gpu})"
+    echo -e "Source:      ${GREEN}$src_pod${NC} (HCA: $src_hca${src_gpu:+, GPU: $src_gpu_type:$src_gpu})"
+    echo -e "Destination: ${GREEN}$dst_pod${NC} (HCA: $dst_hca${dst_gpu:+, GPU: $dst_gpu_type:$dst_gpu})"
     echo -e "Message Size: ${YELLOW}$msg_size bytes${NC}"
     echo -e "Num QPs:      ${YELLOW}$num_qps${NC}"
     if [ "$use_iterations" = true ]; then
@@ -149,6 +211,9 @@ if [ "$json_output" = false ]; then
         echo -e "Duration:     ${YELLOW}$duration seconds${NC}"
     fi
     echo -e "Bi-directional: ${YELLOW}$bi_directional${NC}"
+    if [ ! -z "$tos" ]; then
+        echo -e "TOS:          ${YELLOW}$tos${NC} (RDMA CM enabled)"
+    fi
     echo -e "Namespace:    ${YELLOW}$namespace${NC}"
     echo ""
 fi
@@ -256,10 +321,17 @@ else
     server_cmd="numactl --cpunodebind=$dst_numa --membind=$dst_numa ib_write_bw -d $dst_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$server_json_file"
 fi
 if [ ! -z "$dst_gpu" ]; then
-    server_cmd="$server_cmd --use_cuda=$dst_gpu"
+    if [ "$dst_gpu_type" = "rocm" ]; then
+        server_cmd="$server_cmd --use_rocm=$dst_gpu"
+    else
+        server_cmd="$server_cmd --use_cuda=$dst_gpu"
+    fi
 fi
 if [ "$bi_directional" = true ]; then
     server_cmd="$server_cmd -b --report-both"
+fi
+if [ ! -z "$tos" ]; then
+    server_cmd="$server_cmd -R --tos=$tos"
 fi
 
 # Start server in background and capture output
@@ -303,10 +375,17 @@ else
     client_cmd="numactl --cpunodebind=$src_numa --membind=$src_numa ib_write_bw -d $src_hca -s $msg_size -q $num_qps -D $duration --report_gbits --out_json --out_json_file=$client_json_file"
 fi
 if [ ! -z "$src_gpu" ]; then
-    client_cmd="$client_cmd --use_cuda=$src_gpu"
+    if [ "$src_gpu_type" = "rocm" ]; then
+        client_cmd="$client_cmd --use_rocm=$src_gpu"
+    else
+        client_cmd="$client_cmd --use_cuda=$src_gpu"
+    fi
 fi
 if [ "$bi_directional" = true ]; then
     client_cmd="$client_cmd -b --report-both"
+fi
+if [ ! -z "$tos" ]; then
+    client_cmd="$client_cmd -R --tos=$tos"
 fi
 client_cmd="$client_cmd $dst_ip"
 
