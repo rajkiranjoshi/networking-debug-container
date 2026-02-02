@@ -34,9 +34,11 @@ class TestPair:
     src_pod: str
     src_hca: str
     src_gpu: Optional[str] = None
+    src_gpu_type: str = "cuda"  # "cuda" or "rocm"
     dst_pod: str = ""
     dst_hca: str = ""
     dst_gpu: Optional[str] = None
+    dst_gpu_type: str = "cuda"  # "cuda" or "rocm"
     # Discovered at runtime
     dst_iface: str = ""
     dst_ip: str = ""
@@ -163,7 +165,8 @@ def start_ib_server(
     duration: Optional[int],
     num_iters: Optional[int],
     bi_directional: bool,
-    use_hugepages: bool = False
+    use_hugepages: bool = False,
+    tos: Optional[int] = None
 ) -> tuple[subprocess.Popen, str]:
     """Start ib_write_bw server on destination pod. Returns (process, json_file_path)."""
     json_file = f"/tmp/ib_server_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
@@ -180,9 +183,14 @@ def start_ib_server(
     if use_hugepages:
         ib_cmd += " --use_hugepages"
     if pair.dst_gpu:
-        ib_cmd += f" --use_cuda={pair.dst_gpu}"
+        if pair.dst_gpu_type == "rocm":
+            ib_cmd += f" --use_rocm={pair.dst_gpu}"
+        else:
+            ib_cmd += f" --use_cuda={pair.dst_gpu}"
     if bi_directional:
         ib_cmd += " -b --report-both"
+    if tos is not None:
+        ib_cmd += f" -R --tos={tos}"
     
     # Wrap with numactl for NUMA-aware execution
     cmd = f"numactl --cpunodebind={pair.dst_numa} --membind={pair.dst_numa} {ib_cmd}"
@@ -200,7 +208,8 @@ def run_ib_client(
     duration: Optional[int],
     num_iters: Optional[int],
     bi_directional: bool,
-    use_hugepages: bool = False
+    use_hugepages: bool = False,
+    tos: Optional[int] = None
 ) -> tuple[bool, str, str]:
     """Run ib_write_bw client on source pod. Returns (success, json_output, error_msg)."""
     json_file = f"/tmp/ib_client_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
@@ -217,9 +226,14 @@ def run_ib_client(
     if use_hugepages:
         ib_cmd += " --use_hugepages"
     if pair.src_gpu:
-        ib_cmd += f" --use_cuda={pair.src_gpu}"
+        if pair.src_gpu_type == "rocm":
+            ib_cmd += f" --use_rocm={pair.src_gpu}"
+        else:
+            ib_cmd += f" --use_cuda={pair.src_gpu}"
     if bi_directional:
         ib_cmd += " -b --report-both"
+    if tos is not None:
+        ib_cmd += f" -R --tos={tos}"
     
     ib_cmd += f" {pair.dst_ip}"
     
@@ -299,7 +313,14 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
     
     for i, pair in enumerate(pairs):
         if console:
-            console.print(f"  Pair {i+1}: {pair.src_pod}:{pair.src_hca} → {pair.dst_pod}:{pair.dst_hca} (port {pair.port})")
+            # Build source and destination strings with optional GPU info
+            src_str = f"{pair.src_pod}:{pair.src_hca}"
+            if pair.src_gpu:
+                src_str += f":{pair.src_gpu_type}:{pair.src_gpu}"
+            dst_str = f"{pair.dst_pod}:{pair.dst_hca}"
+            if pair.dst_gpu:
+                dst_str += f":{pair.dst_gpu_type}:{pair.dst_gpu}"
+            console.print(f"  Pair {i+1}: {src_str} → {dst_str} (port {pair.port})")
         
         # Find destination interface
         iface = find_interface_for_hca(namespace, pair.dst_pod, pair.dst_hca)
@@ -338,6 +359,7 @@ def run_multi_nic_test(
     num_iters: Optional[int],
     bi_directional: bool,
     use_hugepages: bool,
+    tos: Optional[int],
     console: Optional[Console]
 ) -> list[TestResult]:
     """Run ib_write_bw tests across all pairs simultaneously."""
@@ -362,7 +384,7 @@ def run_multi_nic_test(
             continue
         
         proc, json_file = start_ib_server(
-            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages
+            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos
         )
         server_procs.append(proc)
         server_json_files.append(json_file)
@@ -390,7 +412,7 @@ def run_multi_nic_test(
             
             future = executor.submit(
                 run_ib_client,
-                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages
+                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos
             )
             client_futures[future] = (i, pair)
         
@@ -557,6 +579,7 @@ def output_json_results(
     output = {
         "config": {
             "namespace": config["namespace"],
+            "tos": config.get("tos"),
             "msg_size": config["msg_size"],
             "num_qps": config["num_qps"],
             "bi_directional": config["bi_directional"],
@@ -616,6 +639,7 @@ def load_config(config_path: str) -> dict:
     config.setdefault('num_qps', 4)
     config.setdefault('bi_directional', False)
     config.setdefault('use_hugepages', False)
+    config.setdefault('tos', None)
     
     return config
 
@@ -632,6 +656,7 @@ Example:
 Config file format (JSON):
     {
         "namespace": "raj-network-debug",
+        "tos": 41,                // Optional: Type of Service (enables RDMA CM)
         "msg_size": 1048576,
         "num_qps": 4,
         "duration": 10,           // OR "num_iters": 5000 (mutually exclusive)
@@ -640,13 +665,18 @@ Config file format (JSON):
             {
                 "src_pod": "pod1",
                 "src_hca": "mlx5_0",
+                "src_gpu": "0",              // Optional: GPU index
+                "src_gpu_type": "cuda",      // Optional: "cuda" (default) or "rocm"
                 "dst_pod": "pod2",
-                "dst_hca": "mlx5_0"
+                "dst_hca": "mlx5_0",
+                "dst_gpu": "1",
+                "dst_gpu_type": "rocm"
             }
         ]
     }
 
 Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
+      GPU type defaults to "cuda" (NVIDIA). Use "rocm" for AMD GPUs.
         """
     )
     parser.add_argument('config', help='Path to JSON configuration file')
@@ -693,6 +723,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     num_iters = config.get('num_iters')
     bi_directional = config['bi_directional']
     use_hugepages = config['use_hugepages']
+    tos = config.get('tos')
     
     # Parse test pairs
     pairs = []
@@ -701,9 +732,11 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
             src_pod=tp['src_pod'],
             src_hca=tp['src_hca'],
             src_gpu=tp.get('src_gpu'),
+            src_gpu_type=tp.get('src_gpu_type', 'cuda'),
             dst_pod=tp['dst_pod'],
             dst_hca=tp['dst_hca'],
             dst_gpu=tp.get('dst_gpu'),
+            dst_gpu_type=tp.get('dst_gpu_type', 'cuda'),
         ))
     
     if console:
@@ -716,6 +749,8 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
         else:
             console.print(f"  Duration:       {duration} seconds")
         console.print(f"  Bi-directional: {bi_directional}")
+        if tos is not None:
+            console.print(f"  TOS:            {tos} (RDMA CM enabled)")
         console.print(f"  Test Pairs:     {len(pairs)}")
     
     # Step 1: Discover endpoints
@@ -729,7 +764,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     # Step 2: Run tests
     start_time = time.time()
     results = run_multi_nic_test(
-        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, console
+        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, console
     )
     elapsed_time = time.time() - start_time
     
