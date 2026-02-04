@@ -3,10 +3,15 @@
 Pingmesh Test for RoCE Cluster NIC Connectivity Validation
 
 This script performs comprehensive ping tests between all pairs of NICs
-across nodes in a Kubernetes cluster to validate network connectivity.
+across nodes/pods in a Kubernetes cluster to validate network connectivity.
+
+Supports two modes:
+- "nodes": Provide node names, pods are derived as networking-debug-pod-<node>
+- "pods": Provide pod names directly (pods must have ping installed)
 
 Usage:
     uv run ./pingmesh.py roce_cluster_info.json
+    uv run ./pingmesh.py pokprod_cluster_info.json
 """
 
 import argparse
@@ -49,9 +54,16 @@ class NodePairResult:
     failed_tests: list = field(default_factory=list)
 
 
-def get_pod_name(node_name: str) -> str:
-    """Generate pod name from node name following deploy_pod_to_node.sh convention."""
-    return f"networking-debug-pod-{node_name}"
+def get_pod_name(entity: str, entity_to_pod: dict[str, str] | None = None) -> str:
+    """
+    Get pod name for an entity.
+    
+    If entity_to_pod mapping is provided, use it directly.
+    Otherwise, generate pod name from node name following deploy_pod_to_node.sh convention.
+    """
+    if entity_to_pod is not None:
+        return entity_to_pod.get(entity, entity)
+    return f"networking-debug-pod-{entity}"
 
 
 def run_kubectl_command(namespace: str, pod_name: str, command: str, timeout: int = 30) -> tuple[bool, str]:
@@ -83,9 +95,9 @@ def run_kubectl_command(namespace: str, pod_name: str, command: str, timeout: in
         return False, str(e)
 
 
-def get_interface_ip(namespace: str, node_name: str, iface_name: str) -> Optional[str]:
-    """Get the IPv4 address of a network interface on a node."""
-    pod_name = get_pod_name(node_name)
+def get_interface_ip(namespace: str, entity: str, iface_name: str, entity_to_pod: dict[str, str] | None = None) -> Optional[str]:
+    """Get the IPv4 address of a network interface on an entity (node or pod)."""
+    pod_name = get_pod_name(entity, entity_to_pod)
     # Get IPv4 address for the interface
     command = f"ip -4 addr show {iface_name} 2>/dev/null | grep -oP 'inet \\K[0-9.]+'"
     
@@ -96,9 +108,9 @@ def get_interface_ip(namespace: str, node_name: str, iface_name: str) -> Optiona
     return None
 
 
-def run_ping_test(namespace: str, src_node: str, src_ip: str, dst_ip: str, retries: int = 1, backoff_ms: int = 500) -> tuple[bool, str]:
+def run_ping_test(namespace: str, src_entity: str, src_ip: str, dst_ip: str, entity_to_pod: dict[str, str] | None = None, retries: int = 1, backoff_ms: int = 500) -> tuple[bool, str]:
     """
-    Run ping test from source node using source IP to destination IP.
+    Run ping test from source entity using source IP to destination IP.
     
     Uses: ping -A -I $srcIP $dstIP -c 3
     -A: Adaptive ping (as fast as possible, one probe in-flight)
@@ -107,7 +119,7 @@ def run_ping_test(namespace: str, src_node: str, src_ip: str, dst_ip: str, retri
     
     If the test fails (possibly due to K8s API issues), retries after backoff.
     """
-    pod_name = get_pod_name(src_node)
+    pod_name = get_pod_name(src_entity, entity_to_pod)
     command = f"ping -A -I {src_ip} {dst_ip} -c 3 -W 2"
     
     last_output = ""
@@ -124,96 +136,97 @@ def run_ping_test(namespace: str, src_node: str, src_ip: str, dst_ip: str, retri
     return False, last_output
 
 
-def collect_interface_ips(namespace: str, nodes: list[str], interfaces: list[str], console: Console, max_workers: int = 10) -> dict:
+def collect_interface_ips(namespace: str, entities: list[str], interfaces: list[str], console: Console, entity_to_pod: dict[str, str] | None = None, max_workers: int = 10) -> dict:
     """
-    Collect IP addresses for all interfaces on all nodes.
+    Collect IP addresses for all interfaces on all entities (nodes or pods).
     
     Returns:
-        Dict mapping node -> interface -> IP address
+        Dict mapping entity -> interface -> IP address
     """
     console.print("\n[bold cyan]📡 Collecting interface IP addresses...[/bold cyan]\n")
     
-    node_interface_ips = defaultdict(dict)
-    node_status = {node: {"completed": 0, "total": len(interfaces), "errors": 0} for node in nodes}
+    entity_interface_ips = defaultdict(dict)
+    entity_status = {entity: {"completed": 0, "total": len(interfaces), "errors": 0} for entity in entities}
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
-        for node in nodes:
+        for entity in entities:
             for iface in interfaces:
-                future = executor.submit(get_interface_ip, namespace, node, iface)
-                futures[future] = (node, iface)
+                future = executor.submit(get_interface_ip, namespace, entity, iface, entity_to_pod)
+                futures[future] = (entity, iface)
         
         for future in as_completed(futures):
-            node, iface = futures[future]
+            entity, iface = futures[future]
             try:
                 ip = future.result()
                 if ip:
-                    node_interface_ips[node][iface] = ip
+                    entity_interface_ips[entity][iface] = ip
                 else:
-                    node_status[node]["errors"] += 1
+                    entity_status[entity]["errors"] += 1
             except Exception:
-                node_status[node]["errors"] += 1
+                entity_status[entity]["errors"] += 1
             
-            node_status[node]["completed"] += 1
+            entity_status[entity]["completed"] += 1
     
-    # Print summary per node 
-    for node in nodes:
-        status = node_status[node]
-        ips_found = len(node_interface_ips.get(node, {}))
+    # Print summary per entity 
+    for entity in entities:
+        status = entity_status[entity]
+        ips_found = len(entity_interface_ips.get(entity, {}))
         if status["errors"] == 0:
-            console.print(f"  {node} ... [green]✓[/green] [dim]({ips_found}/{status['total']} IPs)[/dim]")
+            console.print(f"  {entity} ... [green]✓[/green] [dim]({ips_found}/{status['total']} IPs)[/dim]")
         elif ips_found > 0:
-            console.print(f"  {node} ... [yellow]⚠[/yellow] [dim]({ips_found}/{status['total']} IPs)[/dim]")
+            console.print(f"  {entity} ... [yellow]⚠[/yellow] [dim]({ips_found}/{status['total']} IPs)[/dim]")
         else:
-            console.print(f"  {node} ... [red]✗[/red] [dim](no IPs found)[/dim]")
+            console.print(f"  {entity} ... [red]✗[/red] [dim](no IPs found)[/dim]")
     
-    return dict(node_interface_ips)
+    return dict(entity_interface_ips)
 
 
 def run_pingmesh_tests(
     namespace: str, 
-    nodes: list[str], 
+    entities: list[str], 
     interfaces: list[str],
-    node_interface_ips: dict,
+    entity_interface_ips: dict,
     console: Console,
+    entity_to_pod: dict[str, str] | None = None,
     max_workers: int = 10
 ) -> dict[tuple[str, str], NodePairResult]:
     """
-    Run ping tests between all pairs of NICs across all node pairs.
+    Run ping tests between all pairs of NICs across all entity pairs (nodes or pods).
     
-    Uses N choose 2 for node pairs (unordered) to avoid redundant bidirectional tests,
+    Uses N choose 2 for entity pairs (unordered) to avoid redundant bidirectional tests,
     since a single ping already validates bidirectional connectivity.
     
     Returns:
-        Dict mapping (node_a, node_b) -> NodePairResult (unordered pairs)
+        Dict mapping (entity_a, entity_b) -> NodePairResult (unordered pairs)
     """
     console.print("\n[bold cyan]🔄 Running pingmesh tests...[/bold cyan]\n")
     
     start_time = time.time()
     results = {}
     
-    # Generate N choose 2 node pairs (unordered)
-    node_pairs = list(combinations(nodes, 2))
+    # Generate N choose 2 entity pairs (unordered)
+    entity_pairs = list(combinations(entities, 2))
     
-    # Initialize results for all node pairs
-    for node_a, node_b in node_pairs:
-        results[(node_a, node_b)] = NodePairResult(
-            src_node=node_a,
-            dst_node=node_b
+    # Initialize results for all entity pairs
+    for entity_a, entity_b in entity_pairs:
+        results[(entity_a, entity_b)] = NodePairResult(
+            src_node=entity_a,
+            dst_node=entity_b
         )
     
-    # Collect all ping tasks - for each node pair, test all NIC combinations
+    # Collect all ping tasks - for each entity pair, test all NIC combinations
     ping_tasks = []
-    for node_a, node_b in node_pairs:
-        ips_a = node_interface_ips.get(node_a, {})
-        ips_b = node_interface_ips.get(node_b, {})
+    for entity_a, entity_b in entity_pairs:
+        ips_a = entity_interface_ips.get(entity_a, {})
+        ips_b = entity_interface_ips.get(entity_b, {})
         
-        # Test all NIC pairs between node_a and node_b (ping from node_a)
+        # Test all NIC pairs between entity_a and entity_b (ping from entity_a)
         for iface_a, ip_a in ips_a.items():
             for iface_b, ip_b in ips_b.items():
                 ping_tasks.append({
-                    'node_a': node_a,
-                    'node_b': node_b,
+                    'entity_a': entity_a,
+                    'entity_b': entity_b,
                     'src_iface': iface_a,
                     'dst_iface': iface_b,
                     'src_ip': ip_a,
@@ -240,18 +253,19 @@ def run_pingmesh_tests(
                 future = executor.submit(
                     run_ping_test,
                     namespace,
-                    task['node_a'],  # Ping from node_a
+                    task['entity_a'],  # Ping from entity_a
                     task['src_ip'],
-                    task['dst_ip']
+                    task['dst_ip'],
+                    entity_to_pod
                 )
                 futures[future] = task
             
             for future in as_completed(futures):
                 task = futures[future]
-                node_a = task['node_a']
-                node_b = task['node_b']
+                entity_a = task['entity_a']
+                entity_b = task['entity_b']
                 
-                pair_key = (node_a, node_b)
+                pair_key = (entity_a, entity_b)
                 results[pair_key].total_pairs += 1
                 
                 try:
@@ -260,10 +274,10 @@ def run_pingmesh_tests(
                         results[pair_key].successful_pairs += 1
                     else:
                         results[pair_key].failed_tests.append(PingResult(
-                            src_node=node_a,
+                            src_node=entity_a,
                             src_iface=task['src_iface'],
                             src_ip=task['src_ip'],
-                            dst_node=node_b,
+                            dst_node=entity_b,
                             dst_iface=task['dst_iface'],
                             dst_ip=task['dst_ip'],
                             success=False,
@@ -271,10 +285,10 @@ def run_pingmesh_tests(
                         ))
                 except Exception as e:
                     results[pair_key].failed_tests.append(PingResult(
-                        src_node=node_a,
+                        src_node=entity_a,
                         src_iface=task['src_iface'],
                         src_ip=task['src_ip'],
-                        dst_node=node_b,
+                        dst_node=entity_b,
                         dst_iface=task['dst_iface'],
                         dst_ip=task['dst_ip'],
                         success=False,
@@ -289,49 +303,41 @@ def run_pingmesh_tests(
     return results
 
 
-def get_short_node_name(node_name: str, max_len: int = 12) -> str:
-    """Shorten node name for display in table."""
-    if len(node_name) <= max_len:
-        return node_name
-    # For IP addresses, show last octet(s)
-    if '.' in node_name:
-        parts = node_name.split('.')
-        return f"...{parts[-2]}.{parts[-1]}"
-    return node_name[:max_len-3] + "..."
-
-
 def get_pair_result(results: dict[tuple[str, str], NodePairResult], node_a: str, node_b: str) -> Optional[NodePairResult]:
     """Get result for a node pair, checking both orderings since pairs are unordered."""
     return results.get((node_a, node_b)) or results.get((node_b, node_a))
 
 
 def print_results_matrix(
-    nodes: list[str], 
+    entities: list[str], 
     results: dict[tuple[str, str], NodePairResult],
-    console: Console
+    console: Console,
+    mode: str = "nodes"
 ):
     """Print the connectivity matrix with color-coded results (symmetric)."""
+    entity_label = "Pod" if mode == "pods" else "Node"
+    
     console.print("\n[bold cyan]📊 Pingmesh Connectivity Matrix[/bold cyan]")
     console.print("[dim](Values show: successful_pairs/total_pairs)[/dim]\n")
     
     # Create the table
     table = Table(show_header=True, header_style="bold", box=None)
     
-    # Add the header row (dst nodes)
-    table.add_column("Node A \\ B", style="bold", justify="right")
-    for node in nodes:
-        table.add_column(get_short_node_name(node), justify="center")
+    # Add the header row (dst entities) - use full names, no truncation
+    table.add_column(f"{entity_label} A \\ B", style="bold", justify="right")
+    for entity in entities:
+        table.add_column(entity, justify="center")
     
     # Add data rows - show symmetric matrix (same value in both triangles)
-    for i, node_a in enumerate(nodes):
-        row = [get_short_node_name(node_a)]
-        for j, node_b in enumerate(nodes):
+    for i, entity_a in enumerate(entities):
+        row = [entity_a]
+        for j, entity_b in enumerate(entities):
             if i == j:
                 # Diagonal
                 row.append(Text("-", style="dim"))
             else:
                 # Both triangles - show results
-                pair_result = get_pair_result(results, node_a, node_b)
+                pair_result = get_pair_result(results, entity_a, entity_b)
                 if pair_result:
                     total = pair_result.total_pairs
                     success = pair_result.successful_pairs
@@ -441,13 +447,22 @@ def load_config(config_path: str) -> dict:
     with open(config_path, 'r') as f:
         config = json.load(f)
     
-    required_fields = ['namespace', 'nodes', 'interfaces']
-    for field in required_fields:
-        if field not in config:
-            raise ValueError(f"Missing required field '{field}' in config file")
+    # Check required fields
+    if 'namespace' not in config:
+        raise ValueError("Missing required field 'namespace' in config file")
     
-    if not config['nodes']:
-        raise ValueError("'nodes' list cannot be empty")
+    if 'interfaces' not in config:
+        raise ValueError("Missing required field 'interfaces' in config file")
+    
+    # Must have either 'nodes' or 'pods', but not both
+    has_nodes = 'nodes' in config and config['nodes']
+    has_pods = 'pods' in config and config['pods']
+    
+    if not has_nodes and not has_pods:
+        raise ValueError("Config must have either 'nodes' or 'pods' list (non-empty)")
+    
+    if has_nodes and has_pods:
+        raise ValueError("Config cannot have both 'nodes' and 'pods' - use one or the other")
     
     if not config['interfaces']:
         raise ValueError("'interfaces' list cannot be empty")
@@ -463,13 +478,25 @@ def main():
 Example:
     uv run ./pingmesh.py roce_cluster_info.json
 
-Config file format (JSON):
+Config file format (JSON) - using nodes:
     {
         "namespace": "raj-network-debug",
         "nodes": ["10.0.65.77", "10.0.66.42", ...],
         "interfaces": ["rdma0", "rdma1", ...],
         "max_workers": 10
     }
+
+Config file format (JSON) - using pods directly:
+    {
+        "namespace": "llm-d-wide-ep",
+        "pods": ["pod-name-1", "pod-name-2", ...],
+        "interfaces": ["net1-0", "net1-1", ...],
+        "max_workers": 5
+    }
+
+Note: Use "nodes" when you have networking-debug-pods deployed (pod name is
+derived as networking-debug-pod-<node>). Use "pods" when targeting existing
+pods that already have ping installed.
         """
     )
     parser.add_argument('config', help='Path to JSON configuration file')
@@ -497,22 +524,37 @@ Config file format (JSON):
         sys.exit(1)
     
     namespace = config['namespace']
-    nodes = config['nodes']
     interfaces = config['interfaces']
     max_workers = config.get('max_workers', 10)
     
+    # Determine mode: nodes (with generated pod names) or pods (direct pod names)
+    if 'pods' in config and config['pods']:
+        # Pods mode: use pod names directly
+        entities = config['pods']
+        entity_to_pod = {pod: pod for pod in entities}  # Identity mapping
+        mode = "pods"
+    else:
+        # Nodes mode: generate pod names from node names
+        entities = config['nodes']
+        entity_to_pod = None  # Will use default naming convention
+        mode = "nodes"
+    
     console.print(f"\n[bold]Configuration:[/bold]")
     console.print(f"  Namespace: {namespace}")
-    console.print(f"  Nodes: {len(nodes)}")
-    console.print(f"  Interfaces per node: {len(interfaces)}")
-    console.print(f"  Expected pairs per node-pair: {len(interfaces) * len(interfaces)}")
+    console.print(f"  Mode: {mode}")
+    console.print(f"  {'Pods' if mode == 'pods' else 'Nodes'}: {len(entities)}")
+    console.print(f"  Interfaces per {'pod' if mode == 'pods' else 'node'}: {len(interfaces)}")
+    console.print(f"  Expected pairs per pair: {len(interfaces) * len(interfaces)}")
     console.print(f"  Max workers: {max_workers}")
     
     # Step 1: Collect interface IPs
-    node_interface_ips = collect_interface_ips(namespace, nodes, interfaces, console, max_workers=max_workers)
+    entity_interface_ips = collect_interface_ips(
+        namespace, entities, interfaces, console, 
+        entity_to_pod=entity_to_pod, max_workers=max_workers
+    )
     
     # Validate we have some IPs
-    total_ips = sum(len(ips) for ips in node_interface_ips.values())
+    total_ips = sum(len(ips) for ips in entity_interface_ips.values())
     if total_ips == 0:
         console.print("\n[bold red]Error:[/bold red] No interface IPs found. Check that:")
         console.print("  - Pods are running in the specified namespace")
@@ -520,20 +562,21 @@ Config file format (JSON):
         console.print("  - Pods have network access")
         sys.exit(1)
     
-    console.print(f"\n[green]✓[/green] Collected {total_ips} interface IPs across {len(node_interface_ips)} nodes")
+    console.print(f"\n[green]✓[/green] Collected {total_ips} interface IPs across {len(entity_interface_ips)} {'pods' if mode == 'pods' else 'nodes'}")
     
     # Step 2: Run pingmesh tests
     results = run_pingmesh_tests(
         namespace, 
-        nodes, 
+        entities, 
         interfaces, 
-        node_interface_ips, 
+        entity_interface_ips, 
         console,
+        entity_to_pod=entity_to_pod,
         max_workers=max_workers
     )
     
     # Step 3: Print results
-    print_results_matrix(nodes, results, console)
+    print_results_matrix(entities, results, console, mode=mode)
     print_summary(results, console)
     print_failure_details(results, console)
     
