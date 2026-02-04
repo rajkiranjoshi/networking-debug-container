@@ -1,0 +1,26 @@
+{
+    "namespace": "llm-d-wide-ep",
+    "pods": [
+        "wide-ep-llm-d-decode-0",
+        "wide-ep-llm-d-decode-0-1"
+    ],
+    "interfaces": [
+        "net1-0",
+        "net1-1",
+        "net1-2",
+        "net1-3",
+        "net1-4",
+        "net1-5",
+        "net1-6",
+        "net1-7",
+        "net1-8",
+        "net1-9",
+        "net1-10",
+        "net1-11",
+        "net1-12",
+        "net1-13",
+        "net1-14",
+        "net1-15"
+    ],
+    "max_workers": 5
+}
