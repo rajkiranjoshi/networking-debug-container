@@ -4,7 +4,7 @@
 nvidia_gpu_count=0
 amd_gpu_count=0
 node_name=""
-namespace="default"
+namespace=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -33,12 +33,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# If namespace not specified, get it from current kubectl context
+if [ -z "$namespace" ]; then
+    namespace=$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null)
+    # If no namespace is set in the current context, fall back to "default"
+    if [ -z "$namespace" ]; then
+        namespace="default"
+    fi
+fi
+
 if [ -z "$node_name" ]; then
     echo "Usage: $0 <node_name> [--namespace <namespace>] [--request-nvidia-gpus <N>] [--request-amd-gpus <N>]"
     echo ""
     echo "Arguments:"
     echo "  <node_name>                  Name of the Kubernetes node to deploy the pod on"
-    echo "  -n, --namespace <ns>         Optional: Kubernetes namespace (default: default)"
+    echo "  -n, --namespace <ns>         Optional: Kubernetes namespace (default: current context namespace, or 'default')"
     echo "  --request-nvidia-gpus <N>    Optional: Number of NVIDIA GPUs to request (default: 0)"
     echo "  --request-amd-gpus <N>       Optional: Number of AMD GPUs to request (default: 0)"
     exit 1
