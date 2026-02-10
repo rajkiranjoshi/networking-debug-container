@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 Pingmesh Test for RoCE Cluster NIC Connectivity Validation
 
