@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Parse arguments
-nvidia_gpu_count=0
-amd_gpu_count=0
+nvidia_gpu_count=""
+amd_gpu_count=""
 node_name=""
 namespace=""
 
@@ -48,8 +48,8 @@ if [ -z "$node_name" ]; then
     echo "Arguments:"
     echo "  <node_name>                  Name of the Kubernetes node to deploy the pod on"
     echo "  -n, --namespace <ns>         Optional: Kubernetes namespace (default: current context namespace, or 'default')"
-    echo "  --request-nvidia-gpus <N>    Optional: Number of NVIDIA GPUs to request (default: 0)"
-    echo "  --request-amd-gpus <N>       Optional: Number of AMD GPUs to request (default: 0)"
+    echo "  --request-nvidia-gpus <N>    Optional: Number of NVIDIA GPUs to request (omitted if not specified)"
+    echo "  --request-amd-gpus <N>       Optional: Number of AMD GPUs to request (omitted if not specified)"
     exit 1
 fi
 
@@ -75,13 +75,38 @@ fi
 
 # Apply manifest with dynamic podName, nodeName, namespace, and GPU count substitution
 echo "Deploying pod '$pod_name' to node: $node_name in namespace: $namespace"
-echo "  Requesting: $nvidia_gpu_count NVIDIA GPU(s), $amd_gpu_count AMD GPU(s)"
-sed -e "s/REPLACE_POD_NAME/$pod_name/" \
-    -e "s/REPLACE_NODE_NAME/$node_name/" \
-    -e "s/REPLACE_NAMESPACE/$namespace/" \
-    -e "s/REPLACE_NVIDIA_GPU_COUNT/$nvidia_gpu_count/" \
-    -e "s/REPLACE_AMD_GPU_COUNT/$amd_gpu_count/" \
-    networking-debug-pod.yaml | kubectl apply -f -
+
+# Build GPU info message
+gpu_info=""
+if [ -n "$nvidia_gpu_count" ]; then
+    gpu_info="$nvidia_gpu_count NVIDIA GPU(s)"
+fi
+if [ -n "$amd_gpu_count" ]; then
+    [ -n "$gpu_info" ] && gpu_info="$gpu_info, "
+    gpu_info="${gpu_info}$amd_gpu_count AMD GPU(s)"
+fi
+if [ -n "$gpu_info" ]; then
+    echo "  Requesting: $gpu_info"
+fi
+
+# Build sed command - base substitutions
+sed_cmd="s/REPLACE_POD_NAME/$pod_name/;s/REPLACE_NODE_NAME/$node_name/;s/REPLACE_NAMESPACE/$namespace/"
+
+# Handle NVIDIA GPU: substitute if provided, delete line if not
+if [ -n "$nvidia_gpu_count" ]; then
+    sed_cmd="$sed_cmd;s/REPLACE_NVIDIA_GPU_COUNT/$nvidia_gpu_count/"
+else
+    sed_cmd="$sed_cmd;/nvidia.com\/gpu:/d"
+fi
+
+# Handle AMD GPU: substitute if provided, delete line if not
+if [ -n "$amd_gpu_count" ]; then
+    sed_cmd="$sed_cmd;s/REPLACE_AMD_GPU_COUNT/$amd_gpu_count/"
+else
+    sed_cmd="$sed_cmd;/amd.com\/gpu:/d"
+fi
+
+sed -e "$sed_cmd" networking-debug-pod.yaml | kubectl apply -f -
 
 echo "✓ Pod deployment initiated. Check status with: kubectl get pod $pod_name -n $namespace"
 
