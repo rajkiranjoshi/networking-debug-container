@@ -1,6 +1,7 @@
 #!/bin/bash
 
-set -e  # Exit on error
+# Note: We intentionally don't use 'set -e' because we need explicit error handling
+# to provide meaningful error messages when kubectl commands fail.
 
 # Colors for output
 RED='\033[0;31m'
@@ -274,37 +275,89 @@ get_numa_node_for_hca() {
     echo "$numa_node"
 }
 
-# Step 1: Find the network interface for the destination HCA
+# Step 1: Find network interfaces for the HCAs
 if [ "$json_output" = false ]; then
-    echo -e "${BLUE}[1/5]${NC} Finding network interface for destination HCA ${YELLOW}$dst_hca${NC} on pod ${GREEN}$dst_pod${NC}..."
+    echo -e "${BLUE}[1/5]${NC} Finding network interfaces for HCAs..."
+fi
+
+# Find destination interface
+if [ "$json_output" = false ]; then
+    echo -e "      Destination HCA ${YELLOW}$dst_hca${NC} on pod ${GREEN}$dst_pod${NC}..."
 fi
 dst_iface=$(find_interface_for_hca "$dst_pod" "$dst_hca" "$namespace")
+find_iface_exit=$?
 
-if [ -z "$dst_iface" ]; then
+if [ -z "$dst_iface" ] || [ $find_iface_exit -ne 0 ]; then
     echo -e "${RED}Error: Could not find network interface for HCA '$dst_hca' on pod '$dst_pod'${NC}" >&2
+    echo -e "${YELLOW}Hint: Verify the pod exists and HCA name is correct:${NC}" >&2
+    echo -e "  kubectl get pod -n $namespace $dst_pod" >&2
+    echo -e "  kubectl exec -n $namespace $dst_pod -- ibv_devinfo" >&2
     exit 1
 fi
 if [ "$json_output" = false ]; then
     echo -e "      → Found interface: ${GREEN}$dst_iface${NC}"
 fi
 
-# Step 2: Get the IP address of the destination interface
-if [ "$json_output" = false ]; then
-    echo -e "${BLUE}[2/5]${NC} Getting IP address of interface ${YELLOW}$dst_iface${NC}..."
-fi
-dst_ip=$(get_interface_ip "$dst_pod" "$dst_iface" "$namespace")
+# Find source interface (needed for RDMA CM / TOS to bind correctly)
+if [ ! -z "$tos" ]; then
+    if [ "$json_output" = false ]; then
+        echo -e "      Source HCA ${YELLOW}$src_hca${NC} on pod ${GREEN}$src_pod${NC}..."
+    fi
+    src_iface=$(find_interface_for_hca "$src_pod" "$src_hca" "$namespace")
+    find_iface_exit=$?
 
+    if [ -z "$src_iface" ] || [ $find_iface_exit -ne 0 ]; then
+        echo -e "${RED}Error: Could not find network interface for HCA '$src_hca' on pod '$src_pod'${NC}" >&2
+        echo -e "${YELLOW}Hint: Verify the pod exists and HCA name is correct:${NC}" >&2
+        echo -e "  kubectl get pod -n $namespace $src_pod" >&2
+        echo -e "  kubectl exec -n $namespace $src_pod -- ibv_devinfo" >&2
+        exit 1
+    fi
+    if [ "$json_output" = false ]; then
+        echo -e "      → Found interface: ${GREEN}$src_iface${NC}"
+    fi
+fi
+
+# Step 2: Get IP addresses
+if [ "$json_output" = false ]; then
+    echo -e "${BLUE}[2/5]${NC} Getting IP addresses..."
+fi
+
+# Get destination IP
+dst_ip=$(get_interface_ip "$dst_pod" "$dst_iface" "$namespace")
 if [ -z "$dst_ip" ]; then
     echo -e "${RED}Error: Could not get IP address for interface '$dst_iface' on pod '$dst_pod'${NC}" >&2
     exit 1
 fi
 if [ "$json_output" = false ]; then
-    echo -e "      → Destination IP: ${GREEN}$dst_ip${NC}"
+    echo -e "      → Destination IP (${dst_iface}): ${GREEN}$dst_ip${NC}"
+fi
+
+# Get source IP (needed for RDMA CM / TOS to bind correctly)
+if [ ! -z "$tos" ]; then
+    src_ip=$(get_interface_ip "$src_pod" "$src_iface" "$namespace")
+    if [ -z "$src_ip" ]; then
+        echo -e "${RED}Error: Could not get IP address for interface '$src_iface' on pod '$src_pod'${NC}" >&2
+        exit 1
+    fi
+    if [ "$json_output" = false ]; then
+        echo -e "      → Source IP (${src_iface}): ${GREEN}$src_ip${NC}"
+    fi
 fi
 
 # Step 3: Start the server on the destination pod
 if [ "$json_output" = false ]; then
     echo -e "${BLUE}[3/5]${NC} Starting ib_write_bw server on destination pod ${GREEN}$dst_pod${NC}..."
+fi
+
+# Check for and kill any dangling ib_write_bw processes on the destination pod
+dangling_pids=$(kubectl exec -n "$namespace" "$dst_pod" -- pgrep -x ib_write_bw 2>/dev/null || true)
+if [ ! -z "$dangling_pids" ]; then
+    if [ "$json_output" = false ]; then
+        echo -e "      → ${YELLOW}Warning: Found dangling ib_write_bw process(es) on $dst_pod, killing...${NC}"
+    fi
+    kubectl exec -n "$namespace" "$dst_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    sleep 1  # Give time for the process to terminate
 fi
 
 # Get NUMA node for destination HCA
@@ -342,12 +395,13 @@ fi
 kubectl exec -n "$namespace" "$dst_pod" -- bash -c "$server_cmd" > "$server_log" 2>&1 &
 server_pid=$!
 
-# Wait a bit for server to start
+# Wait a bit for server to start and listen
 sleep 2
 
 # Check if server is still running
 if ! ps -p $server_pid > /dev/null 2>&1; then
-    echo -e "${RED}Error: Server failed to start. Check logs:${NC}" >&2
+    echo -e "${RED}Error: Server failed to start or exited immediately${NC}" >&2
+    echo -e "${RED}Server log output:${NC}" >&2
     cat "$server_log" >&2
     rm -f "$server_log"
     exit 1
@@ -359,6 +413,16 @@ fi
 # Step 4: Start the client on the source pod
 if [ "$json_output" = false ]; then
     echo -e "${BLUE}[4/5]${NC} Starting ib_write_bw client on source pod ${GREEN}$src_pod${NC}..."
+fi
+
+# Check for and kill any dangling ib_write_bw processes on the source pod
+dangling_pids=$(kubectl exec -n "$namespace" "$src_pod" -- pgrep -x ib_write_bw 2>/dev/null || true)
+if [ ! -z "$dangling_pids" ]; then
+    if [ "$json_output" = false ]; then
+        echo -e "      → ${YELLOW}Warning: Found dangling ib_write_bw process(es) on $src_pod, killing...${NC}"
+    fi
+    kubectl exec -n "$namespace" "$src_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    sleep 1  # Give time for the process to terminate
 fi
 
 # Get NUMA node for source HCA
@@ -385,7 +449,7 @@ if [ "$bi_directional" = true ]; then
     client_cmd="$client_cmd -b --report-both"
 fi
 if [ ! -z "$tos" ]; then
-    client_cmd="$client_cmd -R --tos=$tos"
+    client_cmd="$client_cmd -R --tos=$tos --bind_source_ip=$src_ip"
 fi
 client_cmd="$client_cmd $dst_ip"
 
@@ -399,23 +463,39 @@ if [ "$json_output" = false ]; then
 fi
 
 # Run client and capture output
-client_output=$(kubectl exec -n "$namespace" "$src_pod" -- bash -c "$client_cmd" 2>&1)
-client_exit=$?
+# Use a subshell to ensure we capture the exit code properly
+client_output=$(kubectl exec -n "$namespace" "$src_pod" -- bash -c "$client_cmd" 2>&1) || client_exit=$?
+client_exit=${client_exit:-0}
 
 # Wait for server to finish
 wait $server_pid 2>/dev/null || true
 rm -f "$server_log"
 
 if [ $client_exit -ne 0 ]; then
-    echo -e "${RED}Error: Client test failed${NC}" >&2
+    echo -e "${RED}Error: Client test failed (exit code: $client_exit)${NC}" >&2
+    echo -e "${RED}Client output:${NC}" >&2
     echo "$client_output" >&2
     exit 1
 fi
 
+# Additional check: if client_output is empty, something may have gone wrong
+if [ -z "$client_output" ]; then
+    echo -e "${YELLOW}Warning: Client produced no output${NC}" >&2
+fi
+
 # Retrieve the JSON results from the client pod
-client_json=$(kubectl exec -n "$namespace" "$src_pod" -- cat "$client_json_file" 2>/dev/null)
-if [ -z "$client_json" ]; then
-    echo -e "${RED}Error: Could not retrieve client JSON results${NC}" >&2
+client_json=""
+client_json_exit=0
+client_json=$(kubectl exec -n "$namespace" "$src_pod" -- cat "$client_json_file" 2>&1) || client_json_exit=$?
+
+if [ $client_json_exit -ne 0 ] || [ -z "$client_json" ]; then
+    echo -e "${RED}Error: Could not retrieve client JSON results from $client_json_file${NC}" >&2
+    if [ $client_json_exit -ne 0 ]; then
+        echo -e "${RED}kubectl exit code: $client_json_exit${NC}" >&2
+        echo -e "${RED}kubectl output: $client_json${NC}" >&2
+    fi
+    echo -e "${YELLOW}Client command output was:${NC}" >&2
+    echo "$client_output" >&2
     exit 1
 fi
 
