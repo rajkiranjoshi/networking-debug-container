@@ -1,0 +1,58 @@
+{
+    "namespace": "raj-network-debug",
+    "msg_size": 1048576,
+    "num_qps": 1,
+    "num_iters": 5000,
+    "bi_directional": false,
+    "use_hugepages": false,
+    "test_pairs": [
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_0",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_0"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_2",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_2"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_3",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_3"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_4",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_4"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_5",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_5"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_7",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_7"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_8",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_8"
+        },
+        {
+            "src_pod": "networking-debug-pod-10.0.65.77",
+            "src_hca": "mlx5_9",
+            "dst_pod": "networking-debug-pod-10.0.66.42",
+            "dst_hca": "mlx5_9"
+        }
+    ]
+}
