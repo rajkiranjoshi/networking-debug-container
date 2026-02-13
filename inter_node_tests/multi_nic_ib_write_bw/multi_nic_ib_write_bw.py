@@ -40,6 +40,8 @@ class TestPair:
     dst_gpu: Optional[str] = None
     dst_gpu_type: str = "cuda"  # "cuda" or "rocm"
     # Discovered at runtime
+    src_iface: str = ""  # Source interface (needed for RDMA CM / TOS)
+    src_ip: str = ""     # Source IP (needed for RDMA CM / TOS to bind correctly)
     dst_iface: str = ""
     dst_ip: str = ""
     port: int = BASE_PORT  # Port for this test (unique per dst_pod)
@@ -233,7 +235,7 @@ def run_ib_client(
     if bi_directional:
         ib_cmd += " -b --report-both"
     if tos is not None:
-        ib_cmd += f" -R --tos={tos}"
+        ib_cmd += f" -R --tos={tos} --bind_source_ip={pair.src_ip}"
     
     ib_cmd += f" {pair.dst_ip}"
     
@@ -301,8 +303,12 @@ def assign_ports(pairs: list[TestPair]) -> None:
         pair.port = dst_pod_port_map[pair.dst_pod]
 
 
-def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console]) -> bool:
-    """Discover network interfaces, IPs, and NUMA nodes for all test pairs."""
+def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console], tos: Optional[int] = None) -> bool:
+    """Discover network interfaces, IPs, and NUMA nodes for all test pairs.
+    
+    When TOS is specified (RDMA CM mode), also discovers source interface and IP
+    for proper source binding.
+    """
     if console:
         console.print("\n[bold cyan]📡 Discovering network endpoints...[/bold cyan]\n")
     
@@ -321,6 +327,24 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
             if pair.dst_gpu:
                 dst_str += f":{pair.dst_gpu_type}:{pair.dst_gpu}"
             console.print(f"  Pair {i+1}: {src_str} → {dst_str} (port {pair.port})")
+        
+        # Find source interface and IP (needed for RDMA CM / TOS to bind correctly)
+        if tos is not None:
+            src_iface = find_interface_for_hca(namespace, pair.src_pod, pair.src_hca)
+            if not src_iface:
+                if console:
+                    console.print(f"    [red]✗[/red] Could not find source interface for HCA {pair.src_hca}")
+                all_success = False
+                continue
+            pair.src_iface = src_iface
+            
+            src_ip = get_interface_ip(namespace, pair.src_pod, src_iface)
+            if not src_ip:
+                if console:
+                    console.print(f"    [red]✗[/red] Could not get source IP for interface {src_iface}")
+                all_success = False
+                continue
+            pair.src_ip = src_ip
         
         # Find destination interface
         iface = find_interface_for_hca(namespace, pair.dst_pod, pair.dst_hca)
@@ -345,7 +369,10 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
         pair.dst_numa = get_numa_node_for_hca(namespace, pair.dst_pod, pair.dst_hca)
         
         if console:
-            console.print(f"    [green]✓[/green] {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
+            if tos is not None:
+                console.print(f"    [green]✓[/green] src: {pair.src_iface} → {pair.src_ip}, dst: {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
+            else:
+                console.print(f"    [green]✓[/green] {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
     
     return all_success
 
@@ -753,8 +780,8 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
             console.print(f"  TOS:            {tos} (RDMA CM enabled)")
         console.print(f"  Test Pairs:     {len(pairs)}")
     
-    # Step 1: Discover endpoints
-    if not discover_endpoints(namespace, pairs, console):
+    # Step 1: Discover endpoints (pass tos to discover source IPs when needed for RDMA CM)
+    if not discover_endpoints(namespace, pairs, console, tos):
         if console:
             console.print("\n[bold red]Error:[/bold red] Failed to discover all endpoints")
         else:
