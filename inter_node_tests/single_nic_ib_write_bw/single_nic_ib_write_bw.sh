@@ -462,25 +462,128 @@ if [ "$json_output" = false ]; then
     fi
 fi
 
-# Run client and capture output
-# Use a subshell to ensure we capture the exit code properly
-client_output=$(kubectl exec -n "$namespace" "$src_pod" -- bash -c "$client_cmd" 2>&1) || client_exit=$?
-client_exit=${client_exit:-0}
+# Calculate timeout for client command
+# Generous timeout: 10 min for iterations, duration + 5 min for duration mode
+if [ "$use_iterations" = true ]; then
+    client_timeout=600
+else
+    client_timeout=$((duration + 300))
+fi
 
-# Wait for server to finish
-wait $server_pid 2>/dev/null || true
-rm -f "$server_log"
+# Run client in background and monitor both client and server
+client_log="/tmp/ib_client_$$.log"
+kubectl exec -n "$namespace" "$src_pod" -- bash -c "$client_cmd" > "$client_log" 2>&1 &
+client_pid=$!
 
+# Monitor both processes - check every second for quick failure detection
+start_time=$(date +%s)
+client_done=false
+server_done=false
+client_exit=0
+server_exit=0
+
+while true; do
+    # Check if client finished
+    if [ "$client_done" = false ] && ! ps -p $client_pid > /dev/null 2>&1; then
+        wait $client_pid 2>/dev/null || client_exit=$?
+        client_done=true
+    fi
+    
+    # Check if server finished
+    if [ "$server_done" = false ] && ! ps -p $server_pid > /dev/null 2>&1; then
+        wait $server_pid 2>/dev/null || server_exit=$?
+        server_done=true
+    fi
+    
+    # Both done - exit loop
+    if [ "$client_done" = true ] && [ "$server_done" = true ]; then
+        break
+    fi
+    
+    # Client done but failed - exit immediately to report error
+    if [ "$client_done" = true ] && [ $client_exit -ne 0 ]; then
+        break
+    fi
+    
+    # Server failed while client still running - exit immediately
+    if [ "$server_done" = true ] && [ $server_exit -ne 0 ]; then
+        break
+    fi
+    
+    # Check timeout
+    current_time=$(date +%s)
+    elapsed=$((current_time - start_time))
+    if [ $elapsed -ge $client_timeout ]; then
+        echo -e "${RED}Error: Test timed out after ${client_timeout}s${NC}" >&2
+        # Kill processes
+        kill $client_pid 2>/dev/null || true
+        kill $server_pid 2>/dev/null || true
+        kubectl exec -n "$namespace" "$src_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+        kubectl exec -n "$namespace" "$dst_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+        rm -f "$client_log" "$server_log"
+        exit 1
+    fi
+    
+    sleep 1
+done
+
+# If client failed, kill server and cleanup
+if [ $client_exit -ne 0 ] && [ "$server_done" = false ]; then
+    kill $server_pid 2>/dev/null || true
+    kubectl exec -n "$namespace" "$dst_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    wait $server_pid 2>/dev/null || server_exit=$?
+fi
+
+# If server failed, kill client and cleanup
+if [ $server_exit -ne 0 ] && [ "$client_done" = false ]; then
+    kill $client_pid 2>/dev/null || true
+    kubectl exec -n "$namespace" "$src_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    wait $client_pid 2>/dev/null || client_exit=$?
+fi
+
+# Get log contents
+client_output=""
+server_log_content=""
+if [ -f "$client_log" ]; then
+    client_output=$(cat "$client_log" 2>/dev/null)
+fi
+if [ -f "$server_log" ]; then
+    server_log_content=$(cat "$server_log" 2>/dev/null)
+fi
+rm -f "$client_log" "$server_log"
+
+# Handle client failure
 if [ $client_exit -ne 0 ]; then
     echo -e "${RED}Error: Client test failed (exit code: $client_exit)${NC}" >&2
     echo -e "${RED}Client output:${NC}" >&2
     echo "$client_output" >&2
+    if [ ! -z "$server_log_content" ]; then
+        echo -e "${YELLOW}Server output:${NC}" >&2
+        echo "$server_log_content" >&2
+    fi
+    # Cleanup any remaining processes
+    kubectl exec -n "$namespace" "$src_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    kubectl exec -n "$namespace" "$dst_pod" -- pkill -x ib_write_bw 2>/dev/null || true
+    exit 1
+fi
+
+# Handle server failure
+if [ $server_exit -ne 0 ]; then
+    echo -e "${RED}Error: Server exited with error (exit code: $server_exit)${NC}" >&2
+    if [ ! -z "$server_log_content" ]; then
+        echo -e "${RED}Server output:${NC}" >&2
+        echo "$server_log_content" >&2
+    fi
     exit 1
 fi
 
 # Additional check: if client_output is empty, something may have gone wrong
 if [ -z "$client_output" ]; then
     echo -e "${YELLOW}Warning: Client produced no output${NC}" >&2
+    if [ ! -z "$server_log_content" ]; then
+        echo -e "${YELLOW}Server output:${NC}" >&2
+        echo "$server_log_content" >&2
+    fi
 fi
 
 # Retrieve the JSON results from the client pod
