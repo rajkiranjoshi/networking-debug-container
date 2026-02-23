@@ -37,37 +37,41 @@ parse_pci_addr() {
     fi
 }
 
-# Function to get PCI bus number from address
+# Function to get PCI bus number from address (as decimal)
 get_pci_bus() {
     local addr="$1"
-    # Extract bus from 0000:XX:00.0 format
-    echo "$addr" | sed -E 's/^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):.*/\1/'
+    # Extract bus from 0000:XX:00.0 format and convert to decimal
+    local bus_hex=$(echo "$addr" | sed -E 's/^[0-9a-fA-F]{4}:([0-9a-fA-F]{2}):.*/\1/')
+    printf "%d" "0x$bus_hex" 2>/dev/null || echo "0"
 }
 
-# Function to find common PCI path length (measure of topological distance)
-# Returns the number of matching path components (higher = closer)
+# Function to find PCIe topological distance between two devices
+# Returns the number of hops (lower = closer)
 get_pci_distance() {
     local pci1="$1"
     local pci2="$2"
     
-    # Get the upstream bridge/switch for each device
+    # Get the upstream bridge/switch path for each device
     local path1=$(readlink -f "/sys/bus/pci/devices/$pci1" 2>/dev/null || echo "")
     local path2=$(readlink -f "/sys/bus/pci/devices/$pci2" 2>/dev/null || echo "")
     
     if [ -z "$path1" ] || [ -z "$path2" ]; then
-        echo "0"
+        echo "9999"
         return
     fi
     
-    # Count common path components
+    # Count path components
     local IFS='/'
     local -a parts1=($path1)
     local -a parts2=($path2)
     
-    local common=0
-    local min_len=${#parts1[@]}
-    [ ${#parts2[@]} -lt $min_len ] && min_len=${#parts2[@]}
+    local len1=${#parts1[@]}
+    local len2=${#parts2[@]}
+    local min_len=$len1
+    [ $len2 -lt $min_len ] && min_len=$len2
     
+    # Find common prefix length
+    local common=0
     local i=0
     while [ $i -lt $min_len ]; do
         if [ "${parts1[$i]}" = "${parts2[$i]}" ]; then
@@ -78,7 +82,9 @@ get_pci_distance() {
         i=$((i + 1))
     done
     
-    echo "$common"
+    # Distance = hops from pci1 to common ancestor + hops from common ancestor to pci2
+    local distance=$(( (len1 - common) + (len2 - common) ))
+    echo "$distance"
 }
 
 # Function to find network interface for an HCA
@@ -223,13 +229,15 @@ fi
 
 # For each GPU, find the closest HCA(s) with IP interface
 declare -A gpu_to_hcas
+declare -A gpu_to_hca_distances
 
 for gpu_id in "${gpu_ids[@]}"; do
     gpu_pci="${gpu_pci_addrs[$gpu_id]}"
     gpu_numa=$(get_numa_node "$gpu_pci")
     
-    best_distance=-1
+    best_distance=999999
     best_hcas=()
+    declare -A hca_distances
     
     for hca_name in "${hca_names[@]}"; do
         hca_pci="${hca_pci_addrs[$hca_name]}"
@@ -240,15 +248,17 @@ for gpu_id in "${gpu_ids[@]}"; do
         
         hca_numa=$(get_numa_node "$hca_pci")
         
-        # Calculate distance (common path length in sysfs)
+        # Calculate distance (PCIe hops - lower = closer)
         distance=$(get_pci_distance "$gpu_pci" "$hca_pci")
         
-        # Prefer same NUMA node (add bonus to distance)
-        if [ "$gpu_numa" = "$hca_numa" ] && [ "$gpu_numa" != "-1" ]; then
+        # Add penalty for different NUMA node
+        if [ "$gpu_numa" != "$hca_numa" ] || [ "$gpu_numa" = "-1" ]; then
             distance=$((distance + 100))
         fi
         
-        if [ $distance -gt $best_distance ]; then
+        hca_distances[$hca_name]=$distance
+        
+        if [ $distance -lt $best_distance ]; then
             best_distance=$distance
             best_hcas=("$hca_name")
         elif [ $distance -eq $best_distance ]; then
@@ -257,15 +267,20 @@ for gpu_id in "${gpu_ids[@]}"; do
     done
     
     gpu_to_hcas[$gpu_id]="${best_hcas[*]}"
+    # Store distances for each HCA
+    for hca in "${best_hcas[@]}"; do
+        gpu_to_hca_distances["${gpu_id}:${hca}"]="${hca_distances[$hca]}"
+    done
+    unset hca_distances
 done
 
 # Print the table
 print_separator() {
-    printf "+--------+-----------------+-------------------------+-----------+------------+\n"
+    printf "+--------+-----------------+-----------------------------+-----------+------------+\n"
 }
 
 print_header() {
-    printf "| %-6s | %-15s | %-23s | %-9s | %-10s |\n" "GPU ID" "GPU PCI Address" "Nearest HCA PCI Address" "Interface" "HCA Device"
+    printf "| %-6s | %-15s | %-27s | %-9s | %-10s |\n" "GPU ID" "GPU PCI Address" "Nearest HCA PCI Addr (dist)" "Interface" "HCA Device"
 }
 
 print_row() {
@@ -274,7 +289,7 @@ print_row() {
     local hca_pci="$3"
     local iface="$4"
     local hca_name="$5"
-    printf "| %-6s | %-15s | %-23s | %-9s | %-10s |\n" "$gpu_id" "$gpu_pci" "$hca_pci" "$iface" "$hca_name"
+    printf "| %-6s | %-15s | %-27s | %-9s | %-10s |\n" "$gpu_id" "$gpu_pci" "$hca_pci" "$iface" "$hca_name"
 }
 
 print_separator
@@ -295,13 +310,15 @@ for gpu_id in "${gpu_ids[@]}"; do
             hca_pci="${hca_pci_addrs[$hca_name]}"
             hca_pci_short=$(short_pci_addr "$hca_pci")
             hca_iface="${hca_interfaces[$hca_name]}"
+            distance="${gpu_to_hca_distances[${gpu_id}:${hca_name}]}"
+            hca_with_dist="${hca_pci_short} (${distance})"
             
             if $first; then
-                print_row "GPU $gpu_id" "$gpu_pci_short" "$hca_pci_short" "$hca_iface" "$hca_name"
+                print_row "GPU $gpu_id" "$gpu_pci_short" "$hca_with_dist" "$hca_iface" "$hca_name"
                 first=false
             else
                 # Additional HCAs for same GPU (same distance)
-                print_row "" "" "$hca_pci_short" "$hca_iface" "$hca_name"
+                print_row "" "" "$hca_with_dist" "$hca_iface" "$hca_name"
             fi
         done
     fi
