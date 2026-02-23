@@ -58,6 +58,10 @@ class TestResult:
     src_hca: str
     dst_pod: str
     dst_hca: str
+    src_gpu: Optional[str] = None
+    src_gpu_type: str = "cuda"
+    dst_gpu: Optional[str] = None
+    dst_gpu_type: str = "cuda"
     bw_avg_gbps: float = 0.0
     bw_peak_gbps: Optional[float] = None  # Only populated when using num_iters
     # For bi-directional tests
@@ -456,6 +460,10 @@ def run_multi_nic_test(
                     src_hca=pair.src_hca,
                     dst_pod=pair.dst_pod,
                     dst_hca=pair.dst_hca,
+                    src_gpu=pair.src_gpu,
+                    src_gpu_type=pair.src_gpu_type,
+                    dst_gpu=pair.dst_gpu,
+                    dst_gpu_type=pair.dst_gpu_type,
                 )
                 
                 if success and json_output:
@@ -482,6 +490,10 @@ def run_multi_nic_test(
                     src_hca=pair.src_hca,
                     dst_pod=pair.dst_pod,
                     dst_hca=pair.dst_hca,
+                    src_gpu=pair.src_gpu,
+                    src_gpu_type=pair.src_gpu_type,
+                    dst_gpu=pair.dst_gpu,
+                    dst_gpu_type=pair.dst_gpu_type,
                     error_msg=str(e)
                 ))
                 if console:
@@ -508,6 +520,13 @@ def run_multi_nic_test(
     return results
 
 
+def format_endpoint(pod: str, hca: str, gpu: Optional[str], gpu_type: str) -> str:
+    """Format endpoint string with optional GPU info."""
+    if gpu is not None:
+        return f"{pod}:{hca}:{gpu_type}:{gpu}"
+    return f"{pod}:{hca}"
+
+
 def print_results(results: list[TestResult], bi_directional: bool, include_peak: bool, console: Console):
     """Print test results in a formatted table."""
     console.print("\n[bold cyan]📊 Test Results[/bold cyan]\n")
@@ -526,6 +545,9 @@ def print_results(results: list[TestResult], bi_directional: bool, include_peak:
     successful_tests = 0
     
     for r in results:
+        src_str = format_endpoint(r.src_pod, r.src_hca, r.src_gpu, r.src_gpu_type)
+        dst_str = format_endpoint(r.dst_pod, r.dst_hca, r.dst_gpu, r.dst_gpu_type)
+        
         if r.success:
             total_avg_bw += r.bw_avg_gbps
             if r.bw_peak_gbps is not None:
@@ -534,8 +556,8 @@ def print_results(results: list[TestResult], bi_directional: bool, include_peak:
             
             row = [
                 str(r.pair_idx + 1),
-                f"{r.src_pod}:{r.src_hca}",
-                f"{r.dst_pod}:{r.dst_hca}",
+                src_str,
+                dst_str,
                 f"{r.bw_avg_gbps:.2f}",
             ]
             if include_peak:
@@ -545,8 +567,8 @@ def print_results(results: list[TestResult], bi_directional: bool, include_peak:
         else:
             row = [
                 str(r.pair_idx + 1),
-                f"{r.src_pod}:{r.src_hca}",
-                f"{r.dst_pod}:{r.dst_hca}",
+                src_str,
+                dst_str,
                 "-",
             ]
             if include_peak:
