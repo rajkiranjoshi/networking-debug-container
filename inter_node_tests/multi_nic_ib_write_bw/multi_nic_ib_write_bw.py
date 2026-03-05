@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-Multi-NIC IB Write Bandwidth Test
+Multi-NIC IB Bandwidth Test (RDMA WRITE and READ)
 
-Runs ib_write_bw tests across multiple src-dst pairs simultaneously to measure
-aggregate RDMA throughput across multiple NICs.
+Runs ib_write_bw or ib_read_bw tests across multiple src-dst pairs simultaneously
+to measure aggregate RDMA throughput across multiple NICs.
+
+Supports:
+  - RDMA WRITE (ib_write_bw): Source pushes data to destination (default)
+  - RDMA READ (ib_read_bw): Source pulls data from destination (NIXL-like)
 
 Usage:
     uv run ./multi_nic_ib_write_bw.py multi_nic_info.json
@@ -172,10 +176,20 @@ def start_ib_server(
     num_iters: Optional[int],
     bi_directional: bool,
     use_hugepages: bool = False,
-    tos: Optional[int] = None
+    tos: Optional[int] = None,
+    rdma_op: str = "write",
+    tx_depth: Optional[int] = None
 ) -> tuple[subprocess.Popen, str]:
-    """Start ib_write_bw server on destination pod. Returns (process, json_file_path)."""
+    """Start ib_write_bw or ib_read_bw server on destination pod. Returns (process, json_file_path).
+    
+    Args:
+        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw
+        tx_depth: SQ depth (--tx-depth). None uses perftest default.
+    """
     json_file = f"/tmp/ib_server_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
+    
+    # Select the appropriate perftest binary
+    ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
     
     # Build test mode parameter
     if num_iters is not None:
@@ -183,9 +197,11 @@ def start_ib_server(
     else:
         test_param = f"-D {duration}"
     
-    # Build ib_write_bw command with NUMA binding
-    ib_cmd = f"ib_write_bw -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    # Build ib command with NUMA binding
+    ib_cmd = f"{ib_binary} -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
+    if tx_depth is not None:
+        ib_cmd += f" --tx-depth={tx_depth}"
     if use_hugepages:
         ib_cmd += " --use_hugepages"
     if pair.dst_gpu:
@@ -215,10 +231,20 @@ def run_ib_client(
     num_iters: Optional[int],
     bi_directional: bool,
     use_hugepages: bool = False,
-    tos: Optional[int] = None
+    tos: Optional[int] = None,
+    rdma_op: str = "write",
+    tx_depth: Optional[int] = None
 ) -> tuple[bool, str, str]:
-    """Run ib_write_bw client on source pod. Returns (success, json_output, error_msg)."""
+    """Run ib_write_bw or ib_read_bw client on source pod. Returns (success, json_output, error_msg).
+    
+    Args:
+        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw
+        tx_depth: SQ depth (--tx-depth). None uses perftest default.
+    """
     json_file = f"/tmp/ib_client_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
+    
+    # Select the appropriate perftest binary
+    ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
     
     # Build test mode parameter
     if num_iters is not None:
@@ -226,9 +252,11 @@ def run_ib_client(
     else:
         test_param = f"-D {duration}"
     
-    # Build ib_write_bw command
-    ib_cmd = f"ib_write_bw -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    # Build ib command
+    ib_cmd = f"{ib_binary} -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
+    if tx_depth is not None:
+        ib_cmd += f" --tx-depth={tx_depth}"
     if use_hugepages:
         ib_cmd += " --use_hugepages"
     if pair.src_gpu:
@@ -247,7 +275,7 @@ def run_ib_client(
     cmd = f"numactl --cpunodebind={pair.src_numa} --membind={pair.src_numa} {ib_cmd}"
     
     # Timeout is a safety net for catastrophic failures (pod crash, network partition, etc.)
-    # Under normal operation, ib_write_bw clients complete their iterations/duration and exit naturally.
+    # Under normal operation, clients complete their iterations/duration and exit naturally.
     # Set a generous timeout: 10 minutes for iterations mode, duration + 5 min for duration mode.
     if num_iters is not None:
         timeout = 600  # 10 minutes - should be more than enough for any reasonable iteration count
@@ -307,7 +335,7 @@ def assign_ports(pairs: list[TestPair]) -> None:
         pair.port = dst_pod_port_map[pair.dst_pod]
 
 
-def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console], tos: Optional[int] = None) -> bool:
+def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console], tos: Optional[int] = None, rdma_op: str = "write") -> bool:
     """Discover network interfaces, IPs, and NUMA nodes for all test pairs.
     
     When TOS is specified (RDMA CM mode), also discovers source interface and IP
@@ -330,7 +358,11 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
             dst_str = f"{pair.dst_pod}:{pair.dst_hca}"
             if pair.dst_gpu:
                 dst_str += f":{pair.dst_gpu_type}:{pair.dst_gpu}"
-            console.print(f"  Pair {i+1}: {src_str} → {dst_str} (port {pair.port})")
+            # Arrow shows data flow direction: WRITE pushes src→dst, READ pulls dst→src
+            if rdma_op == "read":
+                console.print(f"  Pair {i+1}: {src_str} ← {dst_str} (port {pair.port})")
+            else:
+                console.print(f"  Pair {i+1}: {src_str} → {dst_str} (port {pair.port})")
         
         # Find source interface and IP (needed for RDMA CM / TOS to bind correctly)
         if tos is not None:
@@ -391,9 +423,16 @@ def run_multi_nic_test(
     bi_directional: bool,
     use_hugepages: bool,
     tos: Optional[int],
-    console: Optional[Console]
+    console: Optional[Console],
+    rdma_op: str = "write",
+    tx_depth: Optional[int] = None
 ) -> list[TestResult]:
-    """Run ib_write_bw tests across all pairs simultaneously."""
+    """Run ib_write_bw or ib_read_bw tests across all pairs simultaneously.
+    
+    Args:
+        rdma_op: "write" for RDMA WRITE (push), "read" for RDMA READ (pull/NIXL-like)
+        tx_depth: SQ depth (--tx-depth). None uses perftest default.
+    """
     
     results = []
     server_procs = []
@@ -402,9 +441,13 @@ def run_multi_nic_test(
     # Determine if we should capture peak bandwidth (only in iterations mode)
     include_peak = num_iters is not None
     
+    # Select display name based on operation type
+    op_name = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
+    op_desc = "RDMA READ (pull)" if rdma_op == "read" else "RDMA WRITE (push)"
+    
     # Step 1: Start all servers
     if console:
-        console.print("\n[bold cyan]🚀 Starting all ib_write_bw servers...[/bold cyan]\n")
+        console.print(f"\n[bold cyan]🚀 Starting all {op_name} servers...[/bold cyan]\n")
     
     for i, pair in enumerate(pairs):
         if not pair.dst_ip:
@@ -415,7 +458,7 @@ def run_multi_nic_test(
             continue
         
         proc, json_file = start_ib_server(
-            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos
+            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, rdma_op, tx_depth
         )
         server_procs.append(proc)
         server_json_files.append(json_file)
@@ -429,7 +472,7 @@ def run_multi_nic_test(
     
     # Step 2: Start all clients simultaneously
     if console:
-        console.print("\n[bold cyan]🔄 Starting all ib_write_bw clients...[/bold cyan]\n")
+        console.print(f"\n[bold cyan]🔄 Starting all {op_name} clients...[/bold cyan]\n")
         if num_iters is not None:
             console.print(f"  Running tests for [yellow]{num_iters}[/yellow] iterations...\n")
         else:
@@ -443,7 +486,7 @@ def run_multi_nic_test(
             
             future = executor.submit(
                 run_ib_client,
-                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos
+                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, rdma_op, tx_depth
             )
             client_futures[future] = (i, pair)
         
@@ -527,14 +570,21 @@ def format_endpoint(pod: str, hca: str, gpu: Optional[str], gpu_type: str) -> st
     return f"{pod}:{hca}"
 
 
-def print_results(results: list[TestResult], bi_directional: bool, include_peak: bool, console: Console):
+def print_results(results: list[TestResult], bi_directional: bool, include_peak: bool, console: Console, rdma_op: str = "write"):
     """Print test results in a formatted table."""
     console.print("\n[bold cyan]📊 Test Results[/bold cyan]\n")
     
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", justify="right", style="dim")
-    table.add_column("Source", justify="left")
-    table.add_column("Destination", justify="left")
+    # Column headers reflect data flow direction
+    # WRITE: data flows src → dst (Source sends to Destination)
+    # READ: data flows dst → src (Initiator reads from Remote)
+    if rdma_op == "read":
+        table.add_column("Initiator (reads)", justify="left")
+        table.add_column("Remote (data source)", justify="left")
+    else:
+        table.add_column("Source", justify="left")
+        table.add_column("Destination", justify="left")
     table.add_column("Avg BW (Gbps)", justify="right")
     if include_peak:
         table.add_column("Peak BW (Gbps)", justify="right")
@@ -625,14 +675,19 @@ def output_json_results(
             pr["error"] = r.error_msg
         pair_results.append(pr)
     
-    output = {
-        "config": {
+    output_config = {
             "namespace": config["namespace"],
+            "rdma_op": config.get("rdma_op", "write"),
             "tos": config.get("tos"),
             "msg_size": config["msg_size"],
             "num_qps": config["num_qps"],
             "bi_directional": config["bi_directional"],
-        },
+    }
+    if config.get("tx_depth") is not None:
+        output_config["tx_depth"] = config["tx_depth"]
+    
+    output = {
+        "config": output_config,
         "test_mode": "iterations" if config.get("num_iters") else "duration",
         "elapsed_time_seconds": round(elapsed_time, 2),
         "summary": {
@@ -689,13 +744,19 @@ def load_config(config_path: str) -> dict:
     config.setdefault('bi_directional', False)
     config.setdefault('use_hugepages', False)
     config.setdefault('tos', None)
+    config.setdefault('rdma_op', 'write')  # "write" or "read"
+    config.setdefault('tx_depth', None)    # SQ depth (--tx-depth), None = perftest default
+    
+    # Validate rdma_op
+    if config['rdma_op'] not in ('write', 'read'):
+        raise ValueError(f"Invalid 'rdma_op': {config['rdma_op']}. Must be 'write' or 'read'")
     
     return config
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Multi-NIC IB Write Bandwidth Test',
+        description='Multi-NIC IB Bandwidth Test (RDMA WRITE and READ)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
@@ -706,6 +767,9 @@ Config file format (JSON):
     {
         "namespace": "raj-network-debug",
         "tos": 41,                // Optional: Type of Service (enables RDMA CM)
+        "rdma_op": "write",       // Optional: "write" (default) or "read"
+                                  //   write = RDMA WRITE (src pushes to dst)
+                                  //   read  = RDMA READ (src pulls from dst, NIXL-like)
         "msg_size": 1048576,
         "num_qps": 4,
         "duration": 10,           // OR "num_iters": 5000 (mutually exclusive)
@@ -726,6 +790,10 @@ Config file format (JSON):
 
 Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
       GPU type defaults to "cuda" (NVIDIA). Use "rocm" for AMD GPUs.
+      
+RDMA Operation Types:
+  - "write": Source initiates RDMA WRITE to push data to destination (default)
+  - "read":  Source initiates RDMA READ to pull data from destination (NIXL-like)
         """
     )
     parser.add_argument('config', help='Path to JSON configuration file')
@@ -737,11 +805,13 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     # Create console (None if json output mode to suppress all prints)
     console = None if args.json_output else Console()
     
-    # Print header
-    if console:
-        console.print("\n[bold blue]╔════════════════════════════════════════════════════╗[/bold blue]")
-        console.print("[bold blue]║    Multi-NIC IB Write Bandwidth Test               ║[/bold blue]")
-        console.print("[bold blue]╚════════════════════════════════════════════════════╝[/bold blue]")
+    # Print header (updated after config is loaded to show op type)
+    def print_header(rdma_op: str):
+        if console:
+            op_str = "READ" if rdma_op == "read" else "WRITE"
+            console.print(f"\n[bold blue]╔════════════════════════════════════════════════════╗[/bold blue]")
+            console.print(f"[bold blue]║    Multi-NIC IB {op_str} Bandwidth Test              ║[/bold blue]")
+            console.print(f"[bold blue]╚════════════════════════════════════════════════════╝[/bold blue]")
     
     # Load configuration
     try:
@@ -773,6 +843,11 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     bi_directional = config['bi_directional']
     use_hugepages = config['use_hugepages']
     tos = config.get('tos')
+    rdma_op = config['rdma_op']
+    tx_depth = config.get('tx_depth')
+    
+    # Print header with operation type
+    print_header(rdma_op)
     
     # Parse test pairs
     pairs = []
@@ -789,10 +864,14 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
         ))
     
     if console:
+        op_desc = "RDMA READ (pull/NIXL-like)" if rdma_op == "read" else "RDMA WRITE (push)"
         console.print(f"\n[bold]Configuration:[/bold]")
         console.print(f"  Namespace:      {namespace}")
+        console.print(f"  RDMA Operation: {op_desc}")
         console.print(f"  Message Size:   {msg_size} bytes ({msg_size/1024/1024:.1f} MB)")
         console.print(f"  Num QPs:        {num_qps}")
+        if tx_depth is not None:
+            console.print(f"  TX Depth:       {tx_depth}")
         if num_iters is not None:
             console.print(f"  Iterations:     {num_iters}")
         else:
@@ -803,7 +882,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
         console.print(f"  Test Pairs:     {len(pairs)}")
     
     # Step 1: Discover endpoints (pass tos to discover source IPs when needed for RDMA CM)
-    if not discover_endpoints(namespace, pairs, console, tos):
+    if not discover_endpoints(namespace, pairs, console, tos, rdma_op):
         if console:
             console.print("\n[bold red]Error:[/bold red] Failed to discover all endpoints")
         else:
@@ -813,7 +892,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     # Step 2: Run tests
     start_time = time.time()
     results = run_multi_nic_test(
-        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, console
+        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, console, rdma_op, tx_depth
     )
     elapsed_time = time.time() - start_time
     
@@ -823,7 +902,7 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
     if console:
         console.print(f"\n  [dim]Total test time: {elapsed_time:.1f} seconds[/dim]")
         # Step 3: Print results
-        print_results(results, bi_directional, include_peak, console)
+        print_results(results, bi_directional, include_peak, console, rdma_op)
     else:
         # JSON output mode
         output_json_results(results, config, elapsed_time, include_peak)
