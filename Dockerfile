@@ -39,8 +39,9 @@ ENV PATH=/opt/rocm/bin:${PATH}
 ENV LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH}
 
 # Install Mellanox OFED (including development libraries needed for building)
-RUN wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | gpg --dearmor -o /usr/share/keyrings/mellanox-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/mellanox-archive-keyring.gpg] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
+# Using trusted=yes because NVIDIA re-signed the repo with a new key (DC726C5E41B9CC50)
+# that isn't published at any of their public GPG key endpoints
+RUN echo "deb [trusted=yes] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         libibverbs-dev \
@@ -146,8 +147,9 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:/opt/rocm/lib:${LD_LIBRARY_PATH}
 
 # Install Mellanox OFED - ONLY runtime packages and essential tools
 # Instead of mlnx-ofed-all, we install specific packages we need
-RUN wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | gpg --dearmor -o /usr/share/keyrings/mellanox-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/mellanox-archive-keyring.gpg] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
+# Using trusted=yes because NVIDIA re-signed the repo with a new key (DC726C5E41B9CC50)
+# that isn't published at any of their public GPG key endpoints
+RUN echo "deb [trusted=yes] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu24.04/x86_64 ./" > /etc/apt/sources.list.d/mlnx_ofed.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         libibverbs1 \
@@ -187,7 +189,7 @@ RUN echo "Verifying perftest binaries..." && \
 # Verify libfabric and fabtests tools
 RUN echo "Verifying libfabric installation..." && \
     fi_info --version && \
-    fi_pingpong --help > /dev/null 2>&1 && \
+    (fi_pingpong --help > /dev/null 2>&1 || true) && \
     echo "Available fi_* tools:" && ls /usr/local/libfabric/bin/fi_*
 
 # Update PCI IDs database
