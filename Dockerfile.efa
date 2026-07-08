@@ -1,0 +1,140 @@
+# ============================================================================
+# Dockerfile.efa - Networking debug container for AWS EFA NICs
+#
+# Uses the AWS EFA installer stack (rdma-core + libfabric-aws) which is
+# incompatible with the Mellanox OFED stack in the main Dockerfile.
+# ============================================================================
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        gnupg2 \
+        ca-certificates \
+        apt-transport-https \
+        git \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        environment-modules \
+        tcl \
+        libpci-dev \
+        libnl-3-dev \
+        libnl-route-3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install CUDA Toolkit (needed for building perftest with CUDA support)
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    rm cuda-keyring_1.1-1_all.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/usr/local/cuda-12.8/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
+
+# Install AWS EFA stack (rdma-core, libfabric-aws, OpenMPI)
+# --skip-kmod: kernel module is already loaded on EFA-capable hosts
+# --skip-limit-conf: don't modify system limits in a container build
+# --no-verify: skip GPG verification during build
+RUN apt-get update && \
+    cd /tmp && \
+    wget -q https://efa-installer.amazonaws.com/aws-efa-installer-1.47.0.tar.gz && \
+    tar --no-same-owner -xzf aws-efa-installer-1.47.0.tar.gz && \
+    cd aws-efa-installer && \
+    ./efa_installer.sh -y --skip-kmod --skip-limit-conf --no-verify && \
+    rm -rf /tmp/aws-efa-installer* /var/lib/apt/lists/*
+
+ENV PATH=/opt/amazon/efa/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/amazon/efa/lib:${LD_LIBRARY_PATH}
+
+# Build perftest with CUDA + SRD support against the EFA rdma-core
+RUN git clone https://github.com/linux-rdma/perftest.git /tmp/perftest && \
+    cd /tmp/perftest && \
+    git checkout tags/25.10.0-0.128 && \
+    ./autogen.sh && \
+    export CUDA_H_PATH=/usr/local/cuda/include/cuda.h && \
+    ./configure --prefix=/usr/local/perftest-gpu \
+        --enable-cuda --with-cuda=/usr/local/cuda && \
+    make -j$(nproc) && \
+    make install
+
+# ============================================================================
+# Stage 2: Final runtime image
+# ============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        gnupg2 \
+        ca-certificates \
+        apt-transport-https \
+        environment-modules \
+        tcl \
+        libnl-3-dev \
+        libnl-route-3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install CUDA runtime libraries (for GPUDirect RDMA at runtime)
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    rm cuda-keyring_1.1-1_all.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cuda-cudart-12-8 \
+        cuda-nvrtc-12-8 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so
+
+# Install AWS EFA stack (rdma-core, libfabric-aws, OpenMPI)
+RUN apt-get update && \
+    cd /tmp && \
+    wget -q https://efa-installer.amazonaws.com/aws-efa-installer-1.47.0.tar.gz && \
+    tar --no-same-owner -xzf aws-efa-installer-1.47.0.tar.gz && \
+    cd aws-efa-installer && \
+    ./efa_installer.sh -y --skip-kmod --skip-limit-conf --no-verify && \
+    rm -rf /tmp/aws-efa-installer* /var/lib/apt/lists/*
+
+ENV PATH=/opt/amazon/efa/bin:/opt/amazon/openmpi5/bin:/opt/amazon/openmpi/bin:/usr/local/cuda-12.8/bin:/usr/sbin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/amazon/efa/lib:/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH}
+
+# Install system utilities
+COPY system-packages.txt /tmp/system-packages.txt
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends $(cat /tmp/system-packages.txt) && \
+    rm -rf /var/lib/apt/lists/* /tmp/system-packages.txt
+
+# Copy CUDA-compiled perftest binaries from builder stage
+COPY --from=builder /usr/local/perftest-gpu/bin/* /usr/local/bin/
+
+# Verify EFA stack
+RUN echo "Verifying EFA installation..." && \
+    fi_info --version && \
+    fi_info -p efa 2>/dev/null | head -5 || true && \
+    echo "Available fi_* tools:" && ls /opt/amazon/efa/bin/fi_* | head -10 && \
+    echo "" && \
+    echo "Verifying perftest binaries..." && \
+    ls -lh /usr/local/bin/ib_write_bw && \
+    ldd /usr/local/bin/ib_write_bw || true
+
+# Update PCI IDs database
+RUN update-pciids
+
+# Enable colored prompt in bash
+RUN sed -i 's/#force_color_prompt=yes/force_color_prompt=yes/' /root/.bashrc
+
+# Copy scripts directory to /root
+COPY scripts /root/scripts
+
+WORKDIR /root
+
+CMD ["/bin/bash"]
