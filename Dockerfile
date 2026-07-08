@@ -64,6 +64,9 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Build libfabric with EFA, verbs, and other providers (for AWS EFA and OFI support)
+# --enable-cuda-dlopen: libfabric's configure requires -lcuda and -lnvidia-ml (GPU driver
+# libraries) at link time, but these aren't available in a Docker build without GPU drivers.
+# cuda-dlopen defers loading to runtime via dlopen(), which is the standard container approach.
 RUN git clone --branch v2.6.0 --depth 1 https://github.com/ofiwg/libfabric.git /tmp/libfabric && \
     cd /tmp/libfabric && \
     ./autogen.sh && \
@@ -71,7 +74,9 @@ RUN git clone --branch v2.6.0 --depth 1 https://github.com/ofiwg/libfabric.git /
         --enable-efa \
         --enable-verbs \
         --enable-shm \
-        --enable-mrail && \
+        --enable-mrail \
+        --with-cuda=/usr/local/cuda \
+        --enable-cuda-dlopen && \
     make -j$(nproc) && \
     make install
 
@@ -79,7 +84,8 @@ RUN git clone --branch v2.6.0 --depth 1 https://github.com/ofiwg/libfabric.git /
 RUN cd /tmp/libfabric/fabtests && \
     ./autogen.sh && \
     ./configure --prefix=/usr/local/libfabric \
-        --with-libfabric=/usr/local/libfabric && \
+        --with-libfabric=/usr/local/libfabric \
+        --with-cuda=/usr/local/cuda && \
     make -j$(nproc) && \
     make install
 
