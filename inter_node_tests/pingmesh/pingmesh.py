@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 """
-Pingmesh Test for RoCE Cluster NIC Connectivity Validation
+Pingmesh Test for Network Connectivity Validation
 
-This script performs comprehensive ping tests between all pairs of NICs
-across nodes/pods in a Kubernetes cluster to validate network connectivity.
+Supports two network types:
+- "roce" (default): ICMP ping between RoCE NIC IPs
+- "efa": fi_pingpong over EFA datapath (full NxN cross-device mesh)
 
-Supports two modes:
+And two entity modes:
 - "nodes": Provide node names, pods are derived as networking-debug-pod-<node>
-- "pods": Provide pod names directly (pods must have ping installed)
+- "pods": Provide pod names directly
 
 Usage:
     uv run ./pingmesh.py roce_cluster_info.json
-    uv run ./pingmesh.py pokprod_cluster_info.json
+    uv run ./pingmesh.py pingmesh-efa-eks.json
 """
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -53,6 +55,25 @@ class NodePairResult:
     total_pairs: int = 0
     successful_pairs: int = 0
     failed_tests: list = field(default_factory=list)
+
+
+@dataclass
+class EfaTestResult:
+    """Result of a single EFA fi_pingpong test between two devices."""
+    src_node: str
+    src_device: str
+    dst_node: str
+    dst_device: str
+    success: bool
+    error_msg: Optional[str] = None
+
+
+# EFA constants
+EFA_RESULT_PATTERN = re.compile(r'^\d+\s+\d+\s+=\d+', re.MULTILINE)
+EFA_BASE_PORT = 20000
+EFA_CLIENT_TIMEOUT = 15
+EFA_SERVER_TIMEOUT = 60
+EFA_MAX_WORKERS = 8
 
 
 def get_pod_name(entity: str, entity_to_pod: dict[str, str] | None = None) -> str:
@@ -443,75 +464,352 @@ def print_summary(
     console.print(f"  [red]● Disconnected node pairs: {disconnected}[/red]")
 
 
+## EFA fi_pingpong functions ##
+
+
+def resolve_pod_ip(namespace: str, pod_name: str) -> Optional[str]:
+    """Resolve a pod's primary IP via hostname -I (works with hostNetwork)."""
+    success, output = run_kubectl_command(namespace, pod_name, "hostname -I | awk '{print $1}'")
+    if success and output:
+        return output.strip()
+    return None
+
+
+def start_efa_server_batch(
+    namespace: str,
+    dst_pod: str,
+    device_port_pairs: list[tuple[str, int]],
+) -> bool:
+    """
+    Start a batch of fi_pingpong servers on dst_pod via single kubectl exec.
+    Uses nohup so servers persist after kubectl session closes.
+    Returns True if the kubectl exec succeeded.
+    """
+    server_cmds = []
+    for device, port in device_port_pairs:
+        server_cmds.append(
+            f"nohup timeout {EFA_SERVER_TIMEOUT} "
+            f"fi_pingpong -e rdm -p efa -d {device}-rdm -S 64 -I 100 -B {port} "
+            f"> /dev/null 2>&1 &"
+        )
+    full_cmd = " ".join(server_cmds) + " sleep 2"
+    success, _ = run_kubectl_command(namespace, dst_pod, full_cmd, timeout=15)
+    return success
+
+
+def run_efa_pingpong_client(
+    namespace: str,
+    src_pod: str,
+    src_device: str,
+    dst_port: int,
+    dst_ip: str,
+) -> tuple[bool, str]:
+    """
+    Run a single fi_pingpong client against an already-running server.
+    Returns (success, detail).
+    """
+    client_cmd = (
+        f"timeout {EFA_CLIENT_TIMEOUT} "
+        f"fi_pingpong -e rdm -p efa -d {src_device}-rdm -S 64 -I 100 "
+        f"-P {dst_port} {dst_ip}"
+    )
+    success, output = run_kubectl_command(
+        namespace, src_pod, client_cmd, timeout=EFA_CLIENT_TIMEOUT + 10
+    )
+    if success and EFA_RESULT_PATTERN.search(output):
+        return True, output
+    else:
+        return False, output[:200] if output else "No output (possible crash)"
+
+
+def run_efa_batch(
+    namespace: str,
+    src_pod: str,
+    dst_pod: str,
+    dst_ip: str,
+    test_pairs: list[tuple[str, str]],
+) -> list[tuple[str, str, bool, str]]:
+    """
+    Execute one batch of up to EFA_MAX_WORKERS fi_pingpong tests.
+    1. Start servers on dst_pod (one per test pair's dst_device)
+    2. Run clients in parallel on src_pod
+    3. Servers auto-exit after serving
+
+    test_pairs: list of (src_device, dst_device)
+    Returns: list of (src_device, dst_device, success, detail)
+    """
+    device_port_pairs = [
+        (dst_dev, EFA_BASE_PORT + i)
+        for i, (_, dst_dev) in enumerate(test_pairs)
+    ]
+
+    start_efa_server_batch(namespace, dst_pod, device_port_pairs)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=EFA_MAX_WORKERS) as executor:
+        futures = {}
+        for i, (src_dev, dst_dev) in enumerate(test_pairs):
+            port = EFA_BASE_PORT + i
+            f = executor.submit(
+                run_efa_pingpong_client, namespace, src_pod, src_dev, port, dst_ip
+            )
+            futures[f] = (src_dev, dst_dev)
+
+        for f in as_completed(futures):
+            src_dev, dst_dev = futures[f]
+            try:
+                success, detail = f.result()
+            except Exception as e:
+                success, detail = False, str(e)
+            results.append((src_dev, dst_dev, success, detail))
+
+    return results
+
+
+def generate_efa_batches(devices: list[str], max_workers: int) -> list[list[tuple[str, str]]]:
+    """
+    Generate batched test pairs for full NxN cross-device mesh.
+    Uses diagonal-shifted rotation: each batch has unique src AND dst devices.
+    """
+    n = len(devices)
+    batches = []
+    for shift in range(n):
+        pairs_for_shift = []
+        for i in range(n):
+            src_dev = devices[i]
+            dst_dev = devices[(i + shift) % n]
+            pairs_for_shift.append((src_dev, dst_dev))
+        # Split into sub-batches of max_workers
+        for start in range(0, n, max_workers):
+            batch = pairs_for_shift[start:start + max_workers]
+            batches.append(batch)
+    return batches
+
+
+def run_efa_pingmesh_tests(
+    namespace: str,
+    entities: list[str],
+    devices: list[str],
+    console: Console,
+    entity_to_pod: dict[str, str] | None = None,
+    max_workers: int = EFA_MAX_WORKERS,
+) -> dict[tuple[str, str], NodePairResult]:
+    """
+    Run EFA fi_pingpong tests between all NxN device pairs across node pairs.
+    Uses N-choose-2 (unidirectional) since fi_pingpong is bidirectional.
+    """
+    console.print("\n[bold cyan]Running EFA pingmesh tests...[/bold cyan]\n")
+    start_time = time.time()
+
+    max_workers = min(max_workers, EFA_MAX_WORKERS)
+    entity_pairs = list(combinations(entities, 2))
+    results: dict[tuple[str, str], NodePairResult] = {}
+
+    # Resolve pod IPs upfront
+    console.print("  Resolving pod IPs...")
+    pod_ips: dict[str, str] = {}
+    for entity in entities:
+        pod_name = get_pod_name(entity, entity_to_pod)
+        ip = resolve_pod_ip(namespace, pod_name)
+        if ip:
+            pod_ips[entity] = ip
+            console.print(f"    {entity} -> {ip}")
+        else:
+            console.print(f"    [red]{entity} -> FAILED to resolve IP[/red]")
+
+    n_devices = len(devices)
+    total_tests_per_pair = n_devices * n_devices
+    batches = generate_efa_batches(devices, max_workers)
+    total_batches = len(batches)
+
+    console.print(f"\n  Devices: {n_devices}")
+    console.print(f"  Tests per node pair: {total_tests_per_pair}")
+    console.print(f"  Batches per node pair: {total_batches}")
+    console.print(f"  Max parallel: {max_workers}")
+    console.print(f"  Node pairs: {len(entity_pairs)}\n")
+
+    # Clean up any lingering fi_pingpong processes from prior runs
+    console.print("  Cleaning up lingering fi_pingpong processes...")
+    for entity in entities:
+        pod_name = get_pod_name(entity, entity_to_pod)
+        run_kubectl_command(namespace, pod_name, "pkill -f fi_pingpong; true", timeout=10)
+    time.sleep(1)
+
+    console.print("\n  Running pingmesh...\n")
+
+    interrupted = False
+    active_dst_pod: Optional[str] = None
+
+    try:
+        for entity_a, entity_b in entity_pairs:
+            results[(entity_a, entity_b)] = NodePairResult(
+                src_node=entity_a, dst_node=entity_b
+            )
+
+            src_pod = get_pod_name(entity_a, entity_to_pod)
+            dst_pod = get_pod_name(entity_b, entity_to_pod)
+            dst_ip = pod_ips.get(entity_b)
+
+            if not dst_ip:
+                console.print(f"  [red]Skipping {entity_a} -> {entity_b}: no dst IP[/red]")
+                continue
+
+            active_dst_pod = dst_pod
+            pair_result = results[(entity_a, entity_b)]
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),
+                console=console,
+                transient=False,
+            ) as progress:
+                task_id = progress.add_task(
+                    f"  {entity_a} -> {entity_b}", total=total_tests_per_pair
+                )
+
+                for batch in batches:
+                    batch_results = run_efa_batch(
+                        namespace, src_pod, dst_pod, dst_ip, batch
+                    )
+                    for src_dev, dst_dev, success, detail in batch_results:
+                        pair_result.total_pairs += 1
+                        if success:
+                            pair_result.successful_pairs += 1
+                        else:
+                            pair_result.failed_tests.append(EfaTestResult(
+                                src_node=entity_a,
+                                src_device=src_dev,
+                                dst_node=entity_b,
+                                dst_device=dst_dev,
+                                success=False,
+                                error_msg=detail,
+                            ))
+                        progress.update(task_id, advance=1)
+
+            active_dst_pod = None
+
+    except KeyboardInterrupt:
+        interrupted = True
+        console.print("\n\n[bold yellow]Interrupted! Cleaning up...[/bold yellow]")
+        if active_dst_pod:
+            run_kubectl_command(
+                namespace, active_dst_pod,
+                "pkill -f fi_pingpong; true", timeout=10
+            )
+            console.print(f"  Killed fi_pingpong servers on {active_dst_pod}")
+
+    elapsed = time.time() - start_time
+    status = "Interrupted" if interrupted else "Completed"
+    console.print(f"\n  {status} in {elapsed:.1f} seconds")
+    return results
+
+
+def print_efa_failure_details(
+    results: dict[tuple[str, str], NodePairResult],
+    console: Console,
+):
+    """Print detailed EFA test failure information."""
+    failed_pairs = [
+        (key, result) for key, result in results.items()
+        if result.failed_tests and result.successful_pairs < result.total_pairs
+    ]
+
+    if not failed_pairs:
+        console.print("\n[bold green]All EFA fi_pingpong tests passed![/bold green]")
+        return
+
+    console.print("\n[bold red]EFA Failure Details[/bold red]")
+    console.print("[dim]" + "=" * 80 + "[/dim]\n")
+
+    for (node_a, node_b), result in sorted(failed_pairs):
+        console.print(f"[bold yellow]Node Pair: {node_a} -> {node_b}[/bold yellow]")
+        console.print(f"  Status: {result.successful_pairs}/{result.total_pairs} tests passed")
+        console.print(f"  Failed device pairs:")
+
+        for failed in result.failed_tests[:20]:
+            console.print(
+                f"    [red]x[/red] {failed.src_device} -> {failed.dst_device}"
+            )
+            if failed.error_msg:
+                error_preview = failed.error_msg.replace('\n', ' ')[:100]
+                console.print(f"      [dim]{error_preview}[/dim]")
+
+        if len(result.failed_tests) > 20:
+            console.print(f"    [dim]... and {len(result.failed_tests) - 20} more failures[/dim]")
+        console.print()
+
+
 def load_config(config_path: str) -> dict:
     """Load and validate the configuration file."""
     with open(config_path, 'r') as f:
         config = json.load(f)
     
-    # Check required fields
     if 'namespace' not in config:
         raise ValueError("Missing required field 'namespace' in config file")
-    
-    if 'interfaces' not in config:
-        raise ValueError("Missing required field 'interfaces' in config file")
-    
-    # Must have either 'nodes' or 'pods', but not both
+
+    network_type = config.get('network_type', 'roce')
+    if network_type not in ('roce', 'efa'):
+        raise ValueError(f"Invalid network_type '{network_type}', must be 'roce' or 'efa'")
+
     has_nodes = 'nodes' in config and config['nodes']
     has_pods = 'pods' in config and config['pods']
-    
+
     if not has_nodes and not has_pods:
         raise ValueError("Config must have either 'nodes' or 'pods' list (non-empty)")
-    
     if has_nodes and has_pods:
         raise ValueError("Config cannot have both 'nodes' and 'pods' - use one or the other")
-    
-    if not config['interfaces']:
-        raise ValueError("'interfaces' list cannot be empty")
-    
+
+    if network_type == 'efa':
+        if 'devices' not in config or not config['devices']:
+            raise ValueError("EFA config requires non-empty 'devices' list")
+        mw = config.get('max_workers', EFA_MAX_WORKERS)
+        if mw > EFA_MAX_WORKERS:
+            raise ValueError(
+                f"max_workers={mw} exceeds EFA safe limit of {EFA_MAX_WORKERS}"
+            )
+    else:
+        if 'interfaces' not in config or not config['interfaces']:
+            raise ValueError("RoCE config requires non-empty 'interfaces' list")
+
     return config
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Pingmesh test for RoCE cluster NIC connectivity validation',
+        description='Pingmesh connectivity test (RoCE ping or EFA fi_pingpong)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
     uv run ./pingmesh.py roce_cluster_info.json
+    uv run ./pingmesh.py pingmesh-efa-eks.json
 
-Config file format (JSON) - using nodes:
+RoCE config (ICMP ping between NIC IPs):
     {
-        "namespace": "raj-network-debug",
-        "nodes": ["10.0.65.77", "10.0.66.42", ...],
-        "interfaces": ["rdma0", "rdma1", ...],
+        "namespace": "default",
+        "network_type": "roce",
+        "nodes": ["node-1", "node-2"],
+        "interfaces": ["rdma0", "rdma1"],
         "max_workers": 10
     }
 
-Config file format (JSON) - using pods directly:
+EFA config (fi_pingpong over EFA datapath, full NxN device mesh):
     {
-        "namespace": "llm-d-wide-ep",
-        "pods": ["pod-name-1", "pod-name-2", ...],
-        "interfaces": ["net1-0", "net1-1", ...],
-        "max_workers": 5
+        "namespace": "default",
+        "network_type": "efa",
+        "nodes": ["node-1", "node-2"],
+        "devices": ["rdmap79s0", "rdmap80s0", ...],
+        "max_workers": 8
     }
-
-Note: Use "nodes" when you have networking-debug-pods deployed (pod name is
-derived as networking-debug-pod-<node>). Use "pods" when targeting existing
-pods that already have ping installed.
         """
     )
     parser.add_argument('config', help='Path to JSON configuration file')
-    
+
     args = parser.parse_args()
-    
     console = Console()
-    
-    # Print header
-    console.print("\n[bold blue]╔═══════════════════════════════════════════════╗[/bold blue]")
-    console.print("[bold blue]║    RoCE Cluster Pingmesh Connectivity Test    ║[/bold blue]")
-    console.print("[bold blue]╚═══════════════════════════════════════════════╝[/bold blue]")
-    
-    # Load configuration
+
     try:
         config = load_config(args.config)
     except FileNotFoundError:
@@ -523,23 +821,69 @@ pods that already have ping installed.
     except ValueError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
-    
+
     namespace = config['namespace']
-    interfaces = config['interfaces']
-    max_workers = config.get('max_workers', 10)
-    
-    # Determine mode: nodes (with generated pod names) or pods (direct pod names)
+    network_type = config.get('network_type', 'roce')
+    max_workers = config.get('max_workers', 10 if network_type == 'roce' else EFA_MAX_WORKERS)
+
+    # Determine entity mode
     if 'pods' in config and config['pods']:
-        # Pods mode: use pod names directly
         entities = config['pods']
-        entity_to_pod = {pod: pod for pod in entities}  # Identity mapping
+        entity_to_pod = {pod: pod for pod in entities}
         mode = "pods"
     else:
-        # Nodes mode: generate pod names from node names
         entities = config['nodes']
-        entity_to_pod = None  # Will use default naming convention
+        entity_to_pod = None
         mode = "nodes"
-    
+
+    if network_type == 'efa':
+        _run_efa_mode(config, namespace, entities, entity_to_pod, mode, max_workers, console)
+    else:
+        _run_roce_mode(config, namespace, entities, entity_to_pod, mode, max_workers, console)
+
+
+def _run_efa_mode(config, namespace, entities, entity_to_pod, mode, max_workers, console):
+    """EFA fi_pingpong full mesh test."""
+    devices = config['devices']
+
+    console.print("\n[bold blue]╔═══════════════════════════════════════════════╗[/bold blue]")
+    console.print("[bold blue]║      EFA Pingmesh Connectivity Test           ║[/bold blue]")
+    console.print("[bold blue]╚═══════════════════════════════════════════════╝[/bold blue]")
+
+    console.print(f"\n[bold]Configuration:[/bold]")
+    console.print(f"  Namespace: {namespace}")
+    console.print(f"  Network type: EFA (fi_pingpong)")
+    console.print(f"  Mode: {mode}")
+    console.print(f"  {'Pods' if mode == 'pods' else 'Nodes'}: {len(entities)}")
+    console.print(f"  EFA devices: {len(devices)}")
+    console.print(f"  Tests per node pair: {len(devices) * len(devices)}")
+    console.print(f"  Max workers: {max_workers}")
+
+    results = run_efa_pingmesh_tests(
+        namespace, entities, devices, console,
+        entity_to_pod=entity_to_pod, max_workers=max_workers,
+    )
+
+    print_results_matrix(entities, results, console, mode=mode)
+    print_summary(results, console)
+    print_efa_failure_details(results, console)
+
+    has_failures = any(
+        r.successful_pairs < r.total_pairs
+        for r in results.values()
+        if r.total_pairs > 0
+    )
+    sys.exit(1 if has_failures else 0)
+
+
+def _run_roce_mode(config, namespace, entities, entity_to_pod, mode, max_workers, console):
+    """Original RoCE ICMP ping test."""
+    interfaces = config['interfaces']
+
+    console.print("\n[bold blue]╔═══════════════════════════════════════════════╗[/bold blue]")
+    console.print("[bold blue]║    RoCE Cluster Pingmesh Connectivity Test    ║[/bold blue]")
+    console.print("[bold blue]╚═══════════════════════════════════════════════╝[/bold blue]")
+
     console.print(f"\n[bold]Configuration:[/bold]")
     console.print(f"  Namespace: {namespace}")
     console.print(f"  Mode: {mode}")
@@ -547,14 +891,12 @@ pods that already have ping installed.
     console.print(f"  Interfaces per {'pod' if mode == 'pods' else 'node'}: {len(interfaces)}")
     console.print(f"  Expected pairs per pair: {len(interfaces) * len(interfaces)}")
     console.print(f"  Max workers: {max_workers}")
-    
-    # Step 1: Collect interface IPs
+
     entity_interface_ips = collect_interface_ips(
-        namespace, entities, interfaces, console, 
+        namespace, entities, interfaces, console,
         entity_to_pod=entity_to_pod, max_workers=max_workers
     )
-    
-    # Validate we have some IPs
+
     total_ips = sum(len(ips) for ips in entity_interface_ips.values())
     if total_ips == 0:
         console.print("\n[bold red]Error:[/bold red] No interface IPs found. Check that:")
@@ -562,29 +904,21 @@ pods that already have ping installed.
         console.print("  - Interface names are correct")
         console.print("  - Pods have network access")
         sys.exit(1)
-    
+
     console.print(f"\n[green]✓[/green] Collected {total_ips} interface IPs across {len(entity_interface_ips)} {'pods' if mode == 'pods' else 'nodes'}")
-    
-    # Step 2: Run pingmesh tests
+
     results = run_pingmesh_tests(
-        namespace, 
-        entities, 
-        interfaces, 
-        entity_interface_ips, 
-        console,
-        entity_to_pod=entity_to_pod,
-        max_workers=max_workers
+        namespace, entities, interfaces, entity_interface_ips, console,
+        entity_to_pod=entity_to_pod, max_workers=max_workers
     )
-    
-    # Step 3: Print results
+
     print_results_matrix(entities, results, console, mode=mode)
     print_summary(results, console)
     print_failure_details(results, console)
-    
-    # Exit with appropriate code
+
     has_failures = any(
-        r.successful_pairs < r.total_pairs 
-        for r in results.values() 
+        r.successful_pairs < r.total_pairs
+        for r in results.values()
         if r.total_pairs > 0
     )
     sys.exit(1 if has_failures else 0)
