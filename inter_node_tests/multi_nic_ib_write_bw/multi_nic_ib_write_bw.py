@@ -148,6 +148,20 @@ def get_interface_ip(namespace: str, pod: str, iface: str) -> Optional[str]:
     return None
 
 
+def get_pod_ip(namespace: str, pod: str) -> Optional[str]:
+    """Get the pod's primary IP (first non-loopback address from hostname -I).
+    
+    Useful as a fallback when HCA interfaces don't have IPs (e.g. IPoIB on
+    Azure/AKS). ib_write_bw only needs a reachable IP for the TCP control
+    channel; the RDMA data path is determined by the -d flag.
+    """
+    command = "hostname -I | awk '{print $1}'"
+    success, output = run_kubectl_command(namespace, pod, command)
+    if success and output:
+        return output.strip()
+    return None
+
+
 def get_numa_node_for_hca(namespace: str, pod: str, hca_id: str) -> int:
     """Get the NUMA node for a given HCA on a pod.
     
@@ -178,18 +192,17 @@ def start_ib_server(
     use_hugepages: bool = False,
     tos: Optional[int] = None,
     rdma_op: str = "write",
-    tx_depth: Optional[int] = None
+    tx_depth: Optional[int] = None,
+    network_type: Optional[str] = None,
 ) -> tuple[subprocess.Popen, str]:
-    """Start ib_write_bw or ib_read_bw server on destination pod. Returns (process, json_file_path).
+    """Start ib_write_bw/ib_read_bw/ib_send_bw server on destination pod. Returns (process, json_file_path).
     
     Args:
-        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw
+        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw (ignored when network_type="efa")
         tx_depth: SQ depth (--tx-depth). None uses perftest default.
+        network_type: None for roce/ib, "efa" for EFA (uses ib_send_bw -c SRD -x 0)
     """
     json_file = f"/tmp/ib_server_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
-    
-    # Select the appropriate perftest binary
-    ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
     
     # Build test mode parameter
     if num_iters is not None:
@@ -197,8 +210,11 @@ def start_ib_server(
     else:
         test_param = f"-D {duration}"
     
-    # Build ib command with NUMA binding
-    ib_cmd = f"{ib_binary} -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    if network_type == "efa":
+        ib_cmd = f"ib_send_bw -d {pair.dst_hca} -c SRD -x 0 -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    else:
+        ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
+        ib_cmd = f"{ib_binary} -d {pair.dst_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
     if tx_depth is not None:
         ib_cmd += f" --tx-depth={tx_depth}"
@@ -211,7 +227,7 @@ def start_ib_server(
             ib_cmd += f" --use_cuda={pair.dst_gpu}"
     if bi_directional:
         ib_cmd += " -b --report-both"
-    if tos is not None:
+    if tos is not None and network_type != "efa":
         ib_cmd += f" -R --tos={tos}"
     
     # Wrap with numactl for NUMA-aware execution
@@ -233,18 +249,17 @@ def run_ib_client(
     use_hugepages: bool = False,
     tos: Optional[int] = None,
     rdma_op: str = "write",
-    tx_depth: Optional[int] = None
+    tx_depth: Optional[int] = None,
+    network_type: Optional[str] = None,
 ) -> tuple[bool, str, str]:
-    """Run ib_write_bw or ib_read_bw client on source pod. Returns (success, json_output, error_msg).
+    """Run ib_write_bw/ib_read_bw/ib_send_bw client on source pod. Returns (success, json_output, error_msg).
     
     Args:
-        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw
+        rdma_op: "write" for ib_write_bw, "read" for ib_read_bw (ignored when network_type="efa")
         tx_depth: SQ depth (--tx-depth). None uses perftest default.
+        network_type: None for roce/ib, "efa" for EFA (uses ib_send_bw -c SRD -x 0)
     """
     json_file = f"/tmp/ib_client_{pair_idx}_{uuid.uuid4().hex[:8]}.json"
-    
-    # Select the appropriate perftest binary
-    ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
     
     # Build test mode parameter
     if num_iters is not None:
@@ -253,7 +268,11 @@ def run_ib_client(
         test_param = f"-D {duration}"
     
     # Build ib command
-    ib_cmd = f"{ib_binary} -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    if network_type == "efa":
+        ib_cmd = f"ib_send_bw -d {pair.src_hca} -c SRD -x 0 -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
+    else:
+        ib_binary = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
+        ib_cmd = f"{ib_binary} -d {pair.src_hca} -p {pair.port} -s {msg_size} -q {num_qps} {test_param} --report_gbits --out_json --out_json_file={json_file}"
     
     if tx_depth is not None:
         ib_cmd += f" --tx-depth={tx_depth}"
@@ -266,7 +285,7 @@ def run_ib_client(
             ib_cmd += f" --use_cuda={pair.src_gpu}"
     if bi_directional:
         ib_cmd += " -b --report-both"
-    if tos is not None:
+    if tos is not None and network_type != "efa":
         ib_cmd += f" -R --tos={tos} --bind_source_ip={pair.src_ip}"
     
     ib_cmd += f" {pair.dst_ip}"
@@ -335,14 +354,15 @@ def assign_ports(pairs: list[TestPair]) -> None:
         pair.port = dst_pod_port_map[pair.dst_pod]
 
 
-def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console], tos: Optional[int] = None, rdma_op: str = "write") -> bool:
+def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[Console], tos: Optional[int] = None, rdma_op: str = "write", network_type: Optional[str] = None) -> bool:
     """Discover network interfaces, IPs, and NUMA nodes for all test pairs.
     
     When TOS is specified (RDMA CM mode), also discovers source interface and IP
-    for proper source binding.
+    for proper source binding. For IB/EFA without explicit IPs, falls back to
+    pod IP for the TCP control channel (-d selects the RDMA device).
     """
     if console:
-        console.print("\n[bold cyan]📡 Discovering network endpoints...[/bold cyan]\n")
+        console.print("\n[bold cyan]Discovering network endpoints...[/bold cyan]\n")
     
     all_success = True
     
@@ -351,66 +371,91 @@ def discover_endpoints(namespace: str, pairs: list[TestPair], console: Optional[
     
     for i, pair in enumerate(pairs):
         if console:
-            # Build source and destination strings with optional GPU info
             src_str = f"{pair.src_pod}:{pair.src_hca}"
             if pair.src_gpu:
                 src_str += f":{pair.src_gpu_type}:{pair.src_gpu}"
             dst_str = f"{pair.dst_pod}:{pair.dst_hca}"
             if pair.dst_gpu:
                 dst_str += f":{pair.dst_gpu_type}:{pair.dst_gpu}"
-            # Arrow shows data flow direction: WRITE pushes src→dst, READ pulls dst→src
-            if rdma_op == "read":
-                console.print(f"  Pair {i+1}: {src_str} ← {dst_str} (port {pair.port})")
+            if rdma_op == "read" and network_type != "efa":
+                console.print(f"  Pair {i+1}: {src_str} <- {dst_str} (port {pair.port})")
             else:
-                console.print(f"  Pair {i+1}: {src_str} → {dst_str} (port {pair.port})")
+                console.print(f"  Pair {i+1}: {src_str} -> {dst_str} (port {pair.port})")
         
-        # Find source interface and IP (needed for RDMA CM / TOS to bind correctly)
-        if tos is not None:
+        # Source IP: use pre-configured or discover via sysfs (only needed for RDMA CM / TOS)
+        if tos is not None and not pair.src_ip:
             src_iface = find_interface_for_hca(namespace, pair.src_pod, pair.src_hca)
-            if not src_iface:
-                if console:
-                    console.print(f"    [red]✗[/red] Could not find source interface for HCA {pair.src_hca}")
-                all_success = False
-                continue
-            pair.src_iface = src_iface
+            if src_iface:
+                pair.src_iface = src_iface
+                src_ip = get_interface_ip(namespace, pair.src_pod, src_iface)
+                if src_ip:
+                    pair.src_ip = src_ip
             
-            src_ip = get_interface_ip(namespace, pair.src_pod, src_iface)
-            if not src_ip:
-                if console:
-                    console.print(f"    [red]✗[/red] Could not get source IP for interface {src_iface}")
-                all_success = False
-                continue
-            pair.src_ip = src_ip
+            if not pair.src_ip:
+                pod_ip = get_pod_ip(namespace, pair.src_pod)
+                if pod_ip:
+                    pair.src_ip = pod_ip
+                    if console:
+                        console.print(f"    [dim]Source HCA interface has no IP, using pod IP {pod_ip} for control channel[/dim]")
+                else:
+                    if console:
+                        console.print(f"    [red]FAIL[/red] Could not get source IP for HCA interface or pod")
+                    all_success = False
+                    continue
         
-        # Find destination interface
-        iface = find_interface_for_hca(namespace, pair.dst_pod, pair.dst_hca)
-        if not iface:
-            if console:
-                console.print(f"    [red]✗[/red] Could not find interface for HCA {pair.dst_hca}")
-            all_success = False
-            continue
-        pair.dst_iface = iface
+        # Destination IP: use pre-configured or discover via sysfs
+        if not pair.dst_ip:
+            iface = find_interface_for_hca(namespace, pair.dst_pod, pair.dst_hca)
+            if iface:
+                pair.dst_iface = iface
+                ip = get_interface_ip(namespace, pair.dst_pod, iface)
+                if ip:
+                    pair.dst_ip = ip
+            
+            # Fallback: use pod's primary IP (works for IB/EFA where HCA
+            # interfaces may not have IPs; perftest only needs a reachable
+            # IP for the TCP control channel, -d selects the RDMA HCA)
+            if not pair.dst_ip:
+                pod_ip = get_pod_ip(namespace, pair.dst_pod)
+                if pod_ip:
+                    pair.dst_ip = pod_ip
+                    if console:
+                        console.print(f"    [dim]HCA interface has no IP, using pod IP {pod_ip} for control channel[/dim]")
+                else:
+                    if console:
+                        console.print(f"    [red]FAIL[/red] Could not get IP for HCA interface or pod")
+                    all_success = False
+                    continue
         
-        # Get destination IP
-        ip = get_interface_ip(namespace, pair.dst_pod, iface)
-        if not ip:
-            if console:
-                console.print(f"    [red]✗[/red] Could not get IP for interface {iface}")
-            all_success = False
-            continue
-        pair.dst_ip = ip
-        
-        # Get NUMA nodes for source and destination HCAs
+        # NUMA nodes from HCA sysfs (always discoverable)
         pair.src_numa = get_numa_node_for_hca(namespace, pair.src_pod, pair.src_hca)
         pair.dst_numa = get_numa_node_for_hca(namespace, pair.dst_pod, pair.dst_hca)
         
         if console:
-            if tos is not None:
-                console.print(f"    [green]✓[/green] src: {pair.src_iface} → {pair.src_ip}, dst: {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
-            else:
-                console.print(f"    [green]✓[/green] {iface} → {ip} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
+            src_info = f"src: {pair.src_iface} -> {pair.src_ip}" if pair.src_ip and tos is not None else f"src: {pair.src_ip}" if pair.src_ip else "src: auto"
+            dst_info = f"dst: {pair.dst_iface} -> {pair.dst_ip}" if pair.dst_iface else f"dst: {pair.dst_ip}"
+            console.print(f"    [green]ok[/green] {src_info}, {dst_info} (src NUMA: {pair.src_numa}, dst NUMA: {pair.dst_numa})")
     
     return all_success
+
+
+def cleanup_lingering_processes(namespace: str, pairs: list[TestPair], console: Optional[Console]):
+    """Kill any lingering ib_send_bw/ib_write_bw/ib_read_bw processes on all pods."""
+    pods = set()
+    for pair in pairs:
+        pods.add(pair.src_pod)
+        pods.add(pair.dst_pod)
+
+    if console:
+        console.print("\n[dim]  Cleaning up lingering perftest processes...[/dim]")
+
+    for pod in pods:
+        run_kubectl_command(
+            namespace, pod,
+            "pkill -f 'ib_send_bw|ib_write_bw|ib_read_bw'; true",
+            timeout=10,
+        )
+    time.sleep(1)
 
 
 def run_multi_nic_test(
@@ -425,45 +470,59 @@ def run_multi_nic_test(
     tos: Optional[int],
     console: Optional[Console],
     rdma_op: str = "write",
-    tx_depth: Optional[int] = None
+    tx_depth: Optional[int] = None,
+    network_type: Optional[str] = None,
 ) -> list[TestResult]:
-    """Run ib_write_bw or ib_read_bw tests across all pairs simultaneously.
+    """Run ib_write_bw/ib_read_bw/ib_send_bw tests across all pairs simultaneously.
     
     Args:
         rdma_op: "write" for RDMA WRITE (push), "read" for RDMA READ (pull/NIXL-like)
         tx_depth: SQ depth (--tx-depth). None uses perftest default.
+        network_type: None for roce/ib, "efa" for EFA (uses ib_send_bw)
     """
     
     results = []
-    server_procs = []
-    server_json_files = []
+    
+    # Pre-test cleanup
+    cleanup_lingering_processes(namespace, pairs, console)
     
     # Determine if we should capture peak bandwidth (only in iterations mode)
     include_peak = num_iters is not None
     
     # Select display name based on operation type
-    op_name = "ib_read_bw" if rdma_op == "read" else "ib_write_bw"
-    op_desc = "RDMA READ (pull)" if rdma_op == "read" else "RDMA WRITE (push)"
+    if network_type == "efa":
+        op_name = "ib_send_bw"
+        op_desc = "EFA SEND (SRD)"
+    elif rdma_op == "read":
+        op_name = "ib_read_bw"
+        op_desc = "RDMA READ (pull)"
+    else:
+        op_name = "ib_write_bw"
+        op_desc = "RDMA WRITE (push)"
     
     # Step 1: Start all servers
     if console:
-        console.print(f"\n[bold cyan]🚀 Starting all {op_name} servers...[/bold cyan]\n")
+        console.print(f"\n[bold cyan]Starting all {op_name} servers...[/bold cyan]\n")
     
+    server_procs = []
+    server_json_files = []
+
     for i, pair in enumerate(pairs):
         if not pair.dst_ip:
             if console:
-                console.print(f"  Pair {i+1}: [yellow]⚠ Skipping (no endpoint)[/yellow]")
+                console.print(f"  Pair {i+1}: [yellow]Skipping (no endpoint)[/yellow]")
             server_procs.append(None)
             server_json_files.append(None)
             continue
-        
+
         proc, json_file = start_ib_server(
-            namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, rdma_op, tx_depth
+            namespace, pair, i, msg_size, num_qps, duration, num_iters,
+            bi_directional, use_hugepages, tos, rdma_op, tx_depth, network_type
         )
         server_procs.append(proc)
         server_json_files.append(json_file)
         if console:
-            console.print(f"  Pair {i+1}: [green]✓[/green] Server started on {pair.dst_pod}")
+            console.print(f"  Pair {i+1}: [green]ok[/green] Server started on {pair.dst_pod}")
     
     # Wait for servers to be ready
     if console:
@@ -472,75 +531,87 @@ def run_multi_nic_test(
     
     # Step 2: Start all clients simultaneously
     if console:
-        console.print(f"\n[bold cyan]🔄 Starting all {op_name} clients...[/bold cyan]\n")
+        console.print(f"\n[bold cyan]Starting all {op_name} clients...[/bold cyan]\n")
         if num_iters is not None:
             console.print(f"  Running tests for [yellow]{num_iters}[/yellow] iterations...\n")
         else:
             console.print(f"  Running tests for [yellow]{duration}[/yellow] seconds...\n")
     
-    client_futures = {}
-    with ThreadPoolExecutor(max_workers=len(pairs)) as executor:
-        for i, pair in enumerate(pairs):
-            if not pair.dst_ip or server_procs[i] is None:
-                continue
-            
-            future = executor.submit(
-                run_ib_client,
-                namespace, pair, i, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, rdma_op, tx_depth
-            )
-            client_futures[future] = (i, pair)
-        
-        # Collect client results
-        for future in as_completed(client_futures):
-            idx, pair = client_futures[future]
-            
-            try:
-                success, json_output, error_msg = future.result()
+    try:
+        client_futures = {}
+        with ThreadPoolExecutor(max_workers=len(pairs)) as executor:
+            for i, pair in enumerate(pairs):
+                if not pair.dst_ip or server_procs[i] is None:
+                    continue
                 
-                result = TestResult(
-                    pair_idx=idx,
-                    src_pod=pair.src_pod,
-                    src_hca=pair.src_hca,
-                    dst_pod=pair.dst_pod,
-                    dst_hca=pair.dst_hca,
-                    src_gpu=pair.src_gpu,
-                    src_gpu_type=pair.src_gpu_type,
-                    dst_gpu=pair.dst_gpu,
-                    dst_gpu_type=pair.dst_gpu_type,
+                future = executor.submit(
+                    run_ib_client,
+                    namespace, pair, i, msg_size, num_qps, duration, num_iters,
+                    bi_directional, use_hugepages, tos, rdma_op, tx_depth, network_type
                 )
+                client_futures[future] = (i, pair)
+            
+            # Collect client results
+            for future in as_completed(client_futures):
+                idx, pair = client_futures[future]
                 
-                if success and json_output:
-                    bw_avg, bw_peak = parse_ib_json_result(json_output, include_peak)
-                    result.bw_avg_gbps = bw_avg
-                    result.bw_peak_gbps = bw_peak
-                    result.success = True
+                try:
+                    success, json_output, error_msg = future.result()
+                    
+                    result = TestResult(
+                        pair_idx=idx,
+                        src_pod=pair.src_pod,
+                        src_hca=pair.src_hca,
+                        dst_pod=pair.dst_pod,
+                        dst_hca=pair.dst_hca,
+                        src_gpu=pair.src_gpu,
+                        src_gpu_type=pair.src_gpu_type,
+                        dst_gpu=pair.dst_gpu,
+                        dst_gpu_type=pair.dst_gpu_type,
+                    )
+                    
+                    if success and json_output:
+                        bw_avg, bw_peak = parse_ib_json_result(json_output, include_peak)
+                        result.bw_avg_gbps = bw_avg
+                        result.bw_peak_gbps = bw_peak
+                        result.success = True
+                        if console:
+                            if bw_peak is not None:
+                                console.print(f"  Pair {idx+1}: [green]ok[/green] {bw_avg:.2f} Gbps avg, {bw_peak:.2f} Gbps peak")
+                            else:
+                                console.print(f"  Pair {idx+1}: [green]ok[/green] {bw_avg:.2f} Gbps avg")
+                    else:
+                        result.error_msg = error_msg
+                        if console:
+                            console.print(f"  Pair {idx+1}: [red]FAIL[/red] {error_msg[:50]}")
+                    
+                    results.append(result)
+                    
+                except Exception as e:
+                    results.append(TestResult(
+                        pair_idx=idx,
+                        src_pod=pair.src_pod,
+                        src_hca=pair.src_hca,
+                        dst_pod=pair.dst_pod,
+                        dst_hca=pair.dst_hca,
+                        src_gpu=pair.src_gpu,
+                        src_gpu_type=pair.src_gpu_type,
+                        dst_gpu=pair.dst_gpu,
+                        dst_gpu_type=pair.dst_gpu_type,
+                        error_msg=str(e)
+                    ))
                     if console:
-                        if bw_peak is not None:
-                            console.print(f"  Pair {idx+1}: [green]✓[/green] {bw_avg:.2f} Gbps avg, {bw_peak:.2f} Gbps peak")
-                        else:
-                            console.print(f"  Pair {idx+1}: [green]✓[/green] {bw_avg:.2f} Gbps avg")
-                else:
-                    result.error_msg = error_msg
-                    if console:
-                        console.print(f"  Pair {idx+1}: [red]✗[/red] Failed - {error_msg[:50]}")
-                
-                results.append(result)
-                
-            except Exception as e:
-                results.append(TestResult(
-                    pair_idx=idx,
-                    src_pod=pair.src_pod,
-                    src_hca=pair.src_hca,
-                    dst_pod=pair.dst_pod,
-                    dst_hca=pair.dst_hca,
-                    src_gpu=pair.src_gpu,
-                    src_gpu_type=pair.src_gpu_type,
-                    dst_gpu=pair.dst_gpu,
-                    dst_gpu_type=pair.dst_gpu_type,
-                    error_msg=str(e)
-                ))
-                if console:
-                    console.print(f"  Pair {idx+1}: [red]✗[/red] Exception - {e}")
+                        console.print(f"  Pair {idx+1}: [red]FAIL[/red] Exception - {e}")
+
+    except KeyboardInterrupt:
+        if console:
+            console.print("\n[bold yellow]Interrupted! Cleaning up...[/bold yellow]")
+        for proc in server_procs:
+            if proc:
+                proc.kill()
+        cleanup_lingering_processes(namespace, pairs, console)
+        results.sort(key=lambda r: r.pair_idx)
+        return results
     
     # Wait for server processes to finish and clean up
     for i, proc in enumerate(server_procs):
@@ -739,6 +810,7 @@ def load_config(config_path: str) -> dict:
         config['duration'] = 10
     
     # Set defaults
+    config.setdefault('network_type', None)  # None = roce/ib (default), "efa" = EFA mode
     config.setdefault('msg_size', 1048576)  # 1MB default
     config.setdefault('num_qps', 4)
     config.setdefault('bi_directional', False)
@@ -747,8 +819,12 @@ def load_config(config_path: str) -> dict:
     config.setdefault('rdma_op', 'write')  # "write" or "read"
     config.setdefault('tx_depth', None)    # SQ depth (--tx-depth), None = perftest default
     
-    # Validate rdma_op
-    if config['rdma_op'] not in ('write', 'read'):
+    # Validate network_type
+    if config['network_type'] not in (None, 'efa'):
+        raise ValueError(f"Invalid 'network_type': {config['network_type']}. Must be 'efa' or omitted")
+    
+    # Validate rdma_op (only relevant for roce/ib)
+    if config['network_type'] != 'efa' and config['rdma_op'] not in ('write', 'read'):
         raise ValueError(f"Invalid 'rdma_op': {config['rdma_op']}. Must be 'write' or 'read'")
     
     return config
@@ -756,20 +832,18 @@ def load_config(config_path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Multi-NIC IB Bandwidth Test (RDMA WRITE and READ)',
+        description='Multi-NIC IB Bandwidth Test (RDMA WRITE, READ, and EFA SEND)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
     uv run ./multi_nic_ib_write_bw.py multi_nic_info.json
     uv run ./multi_nic_ib_write_bw.py --json multi_nic_info.json
 
-Config file format (JSON):
+Config file format (JSON) - RoCE/IB:
     {
         "namespace": "raj-network-debug",
         "tos": 41,                // Optional: Type of Service (enables RDMA CM)
         "rdma_op": "write",       // Optional: "write" (default) or "read"
-                                  //   write = RDMA WRITE (src pushes to dst)
-                                  //   read  = RDMA READ (src pulls from dst, NIXL-like)
         "msg_size": 1048576,
         "num_qps": 4,
         "duration": 10,           // OR "num_iters": 5000 (mutually exclusive)
@@ -780,10 +854,30 @@ Config file format (JSON):
                 "src_hca": "mlx5_0",
                 "src_gpu": "0",              // Optional: GPU index
                 "src_gpu_type": "cuda",      // Optional: "cuda" (default) or "rocm"
+                "src_ip": "172.16.101.14",   // Optional: pre-configured source IP
                 "dst_pod": "pod2",
                 "dst_hca": "mlx5_0",
                 "dst_gpu": "1",
-                "dst_gpu_type": "rocm"
+                "dst_ip": "172.16.101.40"    // Optional: pre-configured destination IP
+            }
+        ]
+    }
+
+Config file format (JSON) - EFA:
+    {
+        "namespace": "default",
+        "network_type": "efa",        // Switches to ib_send_bw -c SRD -x 0
+        "msg_size": 8192,             // EFA max message size for SRD
+        "num_qps": 4,                 // Multiple QPs to compensate for smaller msg_size
+        "duration": 10,
+        "test_pairs": [
+            {
+                "src_pod": "pod1",
+                "src_hca": "rdmap79s0",   // EFA device name
+                "src_gpu": "0",
+                "dst_pod": "pod2",
+                "dst_hca": "rdmap79s0",
+                "dst_gpu": "0"
             }
         ]
     }
@@ -794,6 +888,12 @@ Note: When using "num_iters" (< 20000), peak bandwidth is also measured.
 RDMA Operation Types:
   - "write": Source initiates RDMA WRITE to push data to destination (default)
   - "read":  Source initiates RDMA READ to pull data from destination (NIXL-like)
+  
+EFA Mode (network_type="efa"):
+  - Uses ib_send_bw with -c SRD -x 0 for AWS EFA NICs
+  - Skips TOS/RDMA CM flags (not applicable to EFA)
+  - Uses pod IP for control channel (hostNetwork required)
+  - Retains numactl for NUMA-aware execution and GPUDirect RDMA
         """
     )
     parser.add_argument('config', help='Path to JSON configuration file')
@@ -808,9 +908,14 @@ RDMA Operation Types:
     # Print header (updated after config is loaded to show op type)
     def print_header(rdma_op: str):
         if console:
-            op_str = "READ" if rdma_op == "read" else "WRITE"
+            if rdma_op == "efa":
+                op_str = "SEND (EFA/SRD)"
+            elif rdma_op == "read":
+                op_str = "READ"
+            else:
+                op_str = "WRITE"
             console.print(f"\n[bold blue]╔════════════════════════════════════════════════════╗[/bold blue]")
-            console.print(f"[bold blue]║    Multi-NIC IB {op_str} Bandwidth Test              ║[/bold blue]")
+            console.print(f"[bold blue]║    Multi-NIC IB {op_str} Bandwidth Test{' ' * max(0, 14 - len(op_str))}║[/bold blue]")
             console.print(f"[bold blue]╚════════════════════════════════════════════════════╝[/bold blue]")
     
     # Load configuration
@@ -836,6 +941,7 @@ RDMA Operation Types:
         sys.exit(1)
     
     namespace = config['namespace']
+    network_type = config['network_type']
     msg_size = config['msg_size']
     num_qps = config['num_qps']
     duration = config.get('duration')
@@ -847,12 +953,12 @@ RDMA Operation Types:
     tx_depth = config.get('tx_depth')
     
     # Print header with operation type
-    print_header(rdma_op)
+    print_header(rdma_op if network_type != "efa" else "efa")
     
     # Parse test pairs
     pairs = []
     for tp in config['test_pairs']:
-        pairs.append(TestPair(
+        pair = TestPair(
             src_pod=tp['src_pod'],
             src_hca=tp['src_hca'],
             src_gpu=tp.get('src_gpu'),
@@ -861,14 +967,26 @@ RDMA Operation Types:
             dst_hca=tp['dst_hca'],
             dst_gpu=tp.get('dst_gpu'),
             dst_gpu_type=tp.get('dst_gpu_type', 'cuda'),
-        ))
+        )
+        if 'src_ip' in tp:
+            pair.src_ip = tp['src_ip']
+        if 'dst_ip' in tp:
+            pair.dst_ip = tp['dst_ip']
+        pairs.append(pair)
     
     if console:
-        op_desc = "RDMA READ (pull/NIXL-like)" if rdma_op == "read" else "RDMA WRITE (push)"
+        if network_type == "efa":
+            op_desc = "EFA SEND (SRD)"
+        elif rdma_op == "read":
+            op_desc = "RDMA READ (pull/NIXL-like)"
+        else:
+            op_desc = "RDMA WRITE (push)"
         console.print(f"\n[bold]Configuration:[/bold]")
         console.print(f"  Namespace:      {namespace}")
+        if network_type == "efa":
+            console.print(f"  Network Type:   EFA (ib_send_bw -c SRD)")
         console.print(f"  RDMA Operation: {op_desc}")
-        console.print(f"  Message Size:   {msg_size} bytes ({msg_size/1024/1024:.1f} MB)")
+        console.print(f"  Message Size:   {msg_size} bytes ({msg_size/1024:.1f} KB)" if msg_size < 1048576 else f"  Message Size:   {msg_size} bytes ({msg_size/1024/1024:.1f} MB)")
         console.print(f"  Num QPs:        {num_qps}")
         if tx_depth is not None:
             console.print(f"  TX Depth:       {tx_depth}")
@@ -877,12 +995,12 @@ RDMA Operation Types:
         else:
             console.print(f"  Duration:       {duration} seconds")
         console.print(f"  Bi-directional: {bi_directional}")
-        if tos is not None:
+        if tos is not None and network_type != "efa":
             console.print(f"  TOS:            {tos} (RDMA CM enabled)")
         console.print(f"  Test Pairs:     {len(pairs)}")
     
     # Step 1: Discover endpoints (pass tos to discover source IPs when needed for RDMA CM)
-    if not discover_endpoints(namespace, pairs, console, tos, rdma_op):
+    if not discover_endpoints(namespace, pairs, console, tos, rdma_op, network_type):
         if console:
             console.print("\n[bold red]Error:[/bold red] Failed to discover all endpoints")
         else:
@@ -892,7 +1010,8 @@ RDMA Operation Types:
     # Step 2: Run tests
     start_time = time.time()
     results = run_multi_nic_test(
-        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional, use_hugepages, tos, console, rdma_op, tx_depth
+        namespace, pairs, msg_size, num_qps, duration, num_iters, bi_directional,
+        use_hugepages, tos, console, rdma_op, tx_depth, network_type
     )
     elapsed_time = time.time() - start_time
     
