@@ -17,7 +17,7 @@ was 10 commits ahead of `origin/main`; an unpushed commit cannot be recovered by
 cloning.
 
 Repository:
-`https://github.com/rajkiranjoshi/network-debug-container.git`
+`https://github.com/rajkiranjoshi/networking-debug-container.git`
 
 ## Objective
 
@@ -101,8 +101,8 @@ a mutable image tag in the maintenance Pod.
 ## Build and publish on the remote x86_64 Docker host
 
 ```bash
-git clone https://github.com/rajkiranjoshi/network-debug-container.git
-cd network-debug-container/bf3-fw-update
+git clone https://github.com/rajkiranjoshi/networking-debug-container.git
+cd networking-debug-container/bf3-fw-update
 
 export IMAGE_TAG=REGISTRY/PROJECT/bf3-fw-maintenance:doca-3.5.0
 scripts/build-image.sh "$IMAGE_TAG"
