@@ -2,7 +2,7 @@
 
 # GPU to HCA Mapping Script
 # Finds PCIe topologically closest HCA for each GPU (AMD or NVIDIA)
-# Only shows HCAs that have corresponding IP interfaces
+# Shows all HCAs; prefers interfaces with IP but falls back to any matching interface
 
 set -e
 
@@ -88,31 +88,31 @@ get_pci_distance() {
 }
 
 # Function to find network interface for an HCA
+# Returns the best interface: prefers one with an IPv4 address, falls back to any matching interface
 get_hca_interface() {
     local hca="$1"
-    local iface=""
+    local fallback_iface=""
     
-    # Search for network interface associated with this HCA
     for iface_path in /sys/class/net/*; do
         [ ! -d "$iface_path" ] && continue
         local iface_name=$(basename "$iface_path")
         [ "$iface_name" = "lo" ] && continue
         
-        # Check if this interface has the HCA as its infiniband device
         local ib_path="$iface_path/device/infiniband"
         if [ -d "$ib_path" ]; then
             local found_hca=$(ls "$ib_path" 2>/dev/null | head -n 1)
             if [ "$found_hca" = "$hca" ]; then
-                # Check if interface has an IP address
                 if ip -4 addr show dev "$iface_name" 2>/dev/null | grep -q "inet "; then
                     echo "$iface_name"
                     return
                 fi
+                # Remember first matching interface even without an IP
+                [ -z "$fallback_iface" ] && fallback_iface="$iface_name"
             fi
         fi
     done
     
-    echo ""
+    echo "$fallback_iface"
 }
 
 # Function to get short PCI address (without domain)
@@ -197,7 +197,7 @@ if [ ${#gpu_ids[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Collect all HCAs with IP interfaces
+# Collect all HCAs and their network interfaces (if any)
 declare -A hca_pci_addrs
 declare -A hca_interfaces
 declare -a hca_names
@@ -214,7 +214,7 @@ for hca_path in /sys/class/infiniband/*; do
     pci_addr=$(basename "$pci_link")
     pci_addr=$(parse_pci_addr "$pci_addr")
     
-    # Get interface (only if it has an IP)
+    # Get interface (prefers one with an IP, falls back to any)
     iface=$(get_hca_interface "$hca_name")
     
     hca_pci_addrs[$hca_name]="$pci_addr"
@@ -227,7 +227,7 @@ if [ ${#hca_names[@]} -eq 0 ]; then
     exit 1
 fi
 
-# For each GPU, find the closest HCA(s) with IP interface
+# For each GPU, find the closest HCA(s)
 declare -A gpu_to_hcas
 declare -A gpu_to_hca_distances
 
@@ -242,9 +242,6 @@ for gpu_id in "${gpu_ids[@]}"; do
     for hca_name in "${hca_names[@]}"; do
         hca_pci="${hca_pci_addrs[$hca_name]}"
         hca_iface="${hca_interfaces[$hca_name]}"
-        
-        # Skip HCAs without IP interface
-        [ -z "$hca_iface" ] && continue
         
         hca_numa=$(get_numa_node "$hca_pci")
         
@@ -309,7 +306,7 @@ for gpu_id in "${gpu_ids[@]}"; do
         for hca_name in $hcas; do
             hca_pci="${hca_pci_addrs[$hca_name]}"
             hca_pci_short=$(short_pci_addr "$hca_pci")
-            hca_iface="${hca_interfaces[$hca_name]}"
+            hca_iface="${hca_interfaces[$hca_name]:-N/A}"
             distance="${gpu_to_hca_distances[${gpu_id}:${hca_name}]}"
             hca_with_dist="${hca_pci_short} (${distance})"
             
