@@ -1,0 +1,14 @@
+[project]
+name = "gpu-nic-bandwidth"
+version = "0.1.0"
+description = "Intra-host GPU-to-NIC RDMA bandwidth matrix via localhost loopback"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+gpu-nic-bandwidth = "gpu_nic_bandwidth:main"
+
+[dependency-groups]
+dev = []

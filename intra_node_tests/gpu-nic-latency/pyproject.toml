@@ -1,0 +1,14 @@
+[project]
+name = "gpu-nic-latency"
+version = "0.1.0"
+description = "Intra-host GPU-to-NIC RDMA latency matrix via localhost loopback"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+gpu-nic-latency = "gpu_nic_latency:main"
+
+[dependency-groups]
+dev = []

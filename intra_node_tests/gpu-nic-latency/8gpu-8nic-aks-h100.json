@@ -1,0 +1,9 @@
+{
+    "namespace": "default",
+    "pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+    "gpus": ["0", "1", "2", "3", "4", "5", "6", "7"],
+    "nics": ["mlx5_0", "mlx5_1", "mlx5_2", "mlx5_3", "mlx5_4", "mlx5_5", "mlx5_6", "mlx5_7"],
+    "gpu_type": "cuda",
+    "num_iters": 5000,
+    "msg_size": 2
+}
