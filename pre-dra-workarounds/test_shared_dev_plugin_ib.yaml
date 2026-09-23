@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: test-shared-dev-plugin-pod-
+  labels:
+    app: "test-shared-dev-plugin"
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app: "test-shared-dev-plugin"
+        topologyKey: kubernetes.io/hostname
+  containers:
+  - name: networking-debug-container
+    image: quay.io/rajjoshi/networking-debug-container:latest
+    imagePullPolicy: Always  # Always pull the latest image, even if tag is the same
+    resources:
+      limits:
+        nvidia.com/gpu: 1    # NVIDIA GPUs (requires nvidia device plugin)
+        rdma/ib: 1           # Claims 1 of 63 pod slots; all InfiniBand NICs accessible
+      requests:
+        nvidia.com/gpu: 1
+        rdma/ib: 1
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    command: ["/bin/bash", "-c", "sleep infinity"]

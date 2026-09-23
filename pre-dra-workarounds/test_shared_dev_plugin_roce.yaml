@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: test-shared-dev-roce-
+  labels:
+    app: "test-shared-dev-roce"
+  annotations:
+    k8s.v1.cni.cncf.io/networks: >-
+      openshift-multus/roce-net-0, openshift-multus/roce-net-1,
+      openshift-multus/roce-net-2, openshift-multus/roce-net-3,
+      openshift-multus/roce-net-4, openshift-multus/roce-net-5,
+      openshift-multus/roce-net-6, openshift-multus/roce-net-7,
+      openshift-multus/roce-net-8, openshift-multus/roce-net-9
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  # affinity:
+  #   podAntiAffinity:
+  #     requiredDuringSchedulingIgnoredDuringExecution:
+  #     - labelSelector:
+  #         matchLabels:
+  #           app: "test-shared-dev-roce"
+  #       topologyKey: kubernetes.io/hostname
+  containers:
+  - name: networking-debug-container
+    image: quay.io/rajjoshi/networking-debug-container:latest
+    imagePullPolicy: Always
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        rdma/shared_roce: 1
+      requests:
+        nvidia.com/gpu: 1
+        rdma/shared_roce: 1
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]
+    command: ["/bin/bash", "-c", "sleep infinity"]

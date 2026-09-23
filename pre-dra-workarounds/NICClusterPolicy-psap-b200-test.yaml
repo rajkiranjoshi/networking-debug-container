@@ -1,0 +1,74 @@
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: node-role.kubernetes.io/worker
+          operator: Exists
+  nvIpam:
+    enableWebhook: false
+    image: nvidia-k8s-ipam
+    imagePullSecrets: []
+    repository: nvcr.io/nvidia/mellanox
+    version: network-operator-v26.1.0
+  ofedDriver:
+    env:
+    - name: UNLOAD_STORAGE_MODULES
+      value: "true"
+    forcePrecompiled: false
+    image: doca-driver
+    imagePullSecrets: []
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 30
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    repository: nvcr.io/nvidia/mellanox
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 20
+    terminationGracePeriodSeconds: 300
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: true
+        enable: true
+        force: true
+        podSelector: ""
+        timeoutSeconds: 300
+      maxParallelUpgrades: 2
+      safeLoad: false
+    version: doca3.3.0-26.01-1.0.0.0-0
+  rdmaSharedDevicePlugin:
+    config: |-
+      {
+        "configList": [
+          {
+            "resourceName": "shared_roce",
+            "rdmaHcaMax": 100,
+            "selectors": {
+              "vendors": ["15b3"],
+              "ifNames": [
+                "ens40f0np0", "ens42f0np0", "ens41f0np0", "ens38f0np0", "ens37f0np0",
+                "ens32f0np0", "ens31f0np0", "ens36f0np0", "ens34f0np0", "ens35f0np0"
+              ]
+            }
+          }
+        ]
+      }
+    image: k8s-rdma-shared-dev-plugin
+    imagePullSecrets: []
+    repository: nvcr.io/nvidia/cloud-native
+    version: v1.5.2
+  tolerations:
+  - effect: PreferNoSchedule
+    key: UpdateInProgress
+    operator: Exists
+  - effect: NoSchedule
+    key: nvidia.com/gpu
+    operator: Exists
