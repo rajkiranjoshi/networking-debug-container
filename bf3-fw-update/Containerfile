@@ -1,0 +1,26 @@
+ARG DEBUG_IMAGE=quay.io/rajjoshi/networking-debug-container@sha256:31488362bffe534d77de8b7ee36d4ef708b643a6f75bee254e017cd92fe6fc71
+FROM ${DEBUG_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG DOCA_REPO=https://linux.mellanox.com/public/repo/doca/3.5.0/ubuntu24.04/x86_64
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl kmod libfuse2t64 pv && \
+    curl -fsSL "$DOCA_REPO/doca_keyring.gpg" \
+      -o /usr/share/keyrings/nvidia-doca.gpg && \
+    printf 'deb [signed-by=/usr/share/keyrings/nvidia-doca.gpg] %s ./\n' \
+      "$DOCA_REPO" > /etc/apt/sources.list.d/nvidia-doca.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      --allow-downgrades \
+      rshim=2.8.5-1 \
+      mft=4.37.0-154 \
+      doca-installer=2.0.3-1 && \
+    dpkg-query -W rshim mft doca-installer && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY container/ /usr/local/libexec/bf3-fw-update/
+COPY config/targets.tsv /opt/bf3-fw-update/targets.tsv
+
+RUN chmod 0755 /usr/local/libexec/bf3-fw-update/*.sh
+
+CMD ["sleep", "infinity"]
