@@ -70,6 +70,7 @@ delegated to a controller, Job, CI system, or another operator identity.
 
 | Path | Purpose |
 |---|---|
+| [`REMOTE-HANDOFF.md`](./REMOTE-HANDOFF.md) | Compact context for resuming on another host |
 | [`Containerfile`](./Containerfile) | Extends the pinned networking-debug image with DOCA 3.5 firmware tools |
 | [`config.env`](./config.env) | Pinned firmware, OPN, PSID, mode, and count |
 | [`config/targets.tsv`](./config/targets.tsv) | Approved PF, management BDF, and interface mapping |
