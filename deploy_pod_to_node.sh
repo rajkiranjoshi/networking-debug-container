@@ -106,7 +106,11 @@ else
     sed_cmd="$sed_cmd;/amd.com\/gpu:/d"
 fi
 
-sed -e "$sed_cmd" networking-debug-pod.yaml | kubectl apply -f -
+
+if ! sed -e "$sed_cmd" networking-debug-pod.yaml | kubectl apply -f -; then
+    echo "✗ Pod deployment failed."
+    exit 1
+fi
 
 echo "✓ Pod deployment initiated. Check status with: kubectl get pod $pod_name -n $namespace"
 

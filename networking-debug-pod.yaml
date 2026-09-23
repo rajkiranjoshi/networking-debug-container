@@ -7,7 +7,8 @@ spec:
   hostNetwork: true       # Equivalent to --network=host
   restartPolicy: Never
   terminationGracePeriodSeconds: 1
-  nodeName: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
+  nodeSelector:
+    kubernetes.io/hostname: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
   containers:
   - name: networking-debug-container
     image: quay.io/rajjoshi/networking-debug-container:latest
@@ -18,13 +19,15 @@ spec:
         # Use --request-nvidia-gpus or --request-amd-gpus to request GPUs
         nvidia.com/gpu: REPLACE_NVIDIA_GPU_COUNT    # NVIDIA GPUs (requires nvidia device plugin)
         amd.com/gpu: REPLACE_AMD_GPU_COUNT          # AMD GPUs (requires AMD device plugin, provides /dev/kfd and /dev/dri)
+        # rdma/shared_ib: 1                           # Claims 1 of 63 pod slots; all InfiniBand NICs accessible
+        # vpc.amazonaws.com/efa: "16"
     securityContext:
       privileged: true    # Provides access to all host devices including /dev/infiniband/*
     
     # Access to InfiniBand devices (privileged mode already provides this, but explicit is better)
-    volumeMounts:
-    - name: dev-infiniband
-      mountPath: /dev/infiniband
+    # volumeMounts:
+    # - name: dev-infiniband
+    #   mountPath: /dev/infiniband
     
     command: ["/bin/bash", "-c"]
     args: 
@@ -37,8 +40,8 @@ spec:
       echo ""
       sleep infinity
   
-  volumes:
-  - name: dev-infiniband
-    hostPath:
-      path: /dev/infiniband
-      type: Directory
+  # volumes:
+  # - name: dev-infiniband
+  #   hostPath:
+  #     path: /dev/infiniband
+  #     type: Directory

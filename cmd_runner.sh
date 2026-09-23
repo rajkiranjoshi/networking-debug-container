@@ -21,6 +21,6 @@ cmd=$1
 for node in "${nodes[@]}"; do
     echo "Running command on $node"
     pod_name="networking-debug-pod-$node"
-    kubectl exec -it $pod_name -n default -- /bin/bash -c "$cmd"
+    kubectl exec -it $pod_name -- /bin/bash -c "$cmd"
     echo "---------------------------------------"
 done
