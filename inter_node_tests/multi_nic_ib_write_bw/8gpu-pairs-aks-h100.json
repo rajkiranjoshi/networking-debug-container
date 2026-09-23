@@ -1,0 +1,73 @@
+{
+    "namespace": "default",
+    "msg_size": 1048576,
+    "num_qps": 4,
+    "duration": 300,
+    "bi_directional": false,
+    "test_pairs": [
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_0",
+            "src_gpu": "0",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_0",
+            "dst_gpu": "0"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_1",
+            "src_gpu": "1",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_1",
+            "dst_gpu": "1"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_2",
+            "src_gpu": "2",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_2",
+            "dst_gpu": "2"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_3",
+            "src_gpu": "3",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_3",
+            "dst_gpu": "3"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_4",
+            "src_gpu": "4",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_4",
+            "dst_gpu": "4"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_5",
+            "src_gpu": "5",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_5",
+            "dst_gpu": "5"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_6",
+            "src_gpu": "6",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_6",
+            "dst_gpu": "6"
+        },
+        {
+            "src_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000000",
+            "src_hca": "mlx5_7",
+            "src_gpu": "7",
+            "dst_pod": "networking-debug-pod-aks-gpunp-12730235-vmss000001",
+            "dst_hca": "mlx5_7",
+            "dst_gpu": "7"
+        }
+    ]
+}

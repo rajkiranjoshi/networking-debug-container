@@ -1,0 +1,12 @@
+{
+    "namespace": "rhaii-validation",
+    "pods": [
+        "test-shared-dev-roce-ts8h8",
+        "test-shared-dev-roce-dbhxg"
+    ],
+    "interfaces": [
+        "net1", "net2", "net3", "net4", "net5",
+        "net6", "net7", "net8", "net9", "net10"
+    ],
+    "max_workers": 10
+}

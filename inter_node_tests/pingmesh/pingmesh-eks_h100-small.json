@@ -1,0 +1,12 @@
+{
+    "namespace": "default",
+    "network_type": "efa",
+    "nodes": [
+        "ip-10-12-2-146.us-west-2.compute.internal",
+        "ip-10-12-2-45.us-west-2.compute.internal"
+    ],
+    "devices": [
+        "rdmap79s0", "rdmap80s0", "rdmap81s0", "rdmap82s0"
+    ],
+    "max_workers": 8
+}

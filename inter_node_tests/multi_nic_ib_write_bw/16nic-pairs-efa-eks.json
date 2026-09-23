@@ -1,0 +1,29 @@
+{
+    "namespace": "default",
+    "network_type": "efa",
+    "msg_size": 8192,
+    "num_qps": 4,
+    "duration": 20,
+    "bi_directional": false,
+    "test_pairs": [
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap79s0",  "src_gpu": "0", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap79s0",  "dst_gpu": "0"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap80s0",  "src_gpu": "0", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap80s0",  "dst_gpu": "0"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap81s0",  "src_gpu": "0", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap81s0",  "dst_gpu": "0"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap82s0",  "src_gpu": "0", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap82s0",  "dst_gpu": "0"},
+
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap113s0", "src_gpu": "1", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap96s0",  "dst_gpu": "1"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap114s0", "src_gpu": "1", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap97s0",  "dst_gpu": "1"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap115s0", "src_gpu": "1", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap98s0",  "dst_gpu": "1"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap116s0", "src_gpu": "1", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap99s0",  "dst_gpu": "1"},
+
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap130s0", "src_gpu": "2", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap113s0", "dst_gpu": "2"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap131s0", "src_gpu": "2", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap114s0", "dst_gpu": "2"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap132s0", "src_gpu": "2", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap115s0", "dst_gpu": "2"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap133s0", "src_gpu": "2", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap116s0", "dst_gpu": "2"},
+
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap147s0", "src_gpu": "3", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap130s0", "dst_gpu": "3"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap148s0", "src_gpu": "3", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap131s0", "dst_gpu": "3"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap149s0", "src_gpu": "3", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap132s0", "dst_gpu": "3"},
+        {"src_pod": "networking-debug-pod-ip-10-12-2-45.us-west-2.compute.internal", "src_hca": "rdmap150s0", "src_gpu": "3", "dst_pod": "networking-debug-pod-ip-10-12-2-146.us-west-2.compute.internal", "dst_hca": "rdmap133s0", "dst_gpu": "3"}
+    ]
+}
