@@ -1,0 +1,89 @@
+{
+    "namespace": "raj-dev",
+    "msg_size": 1048576,
+    "num_qps": 8,
+    "duration": 180,
+    "bi_directional": false,
+    "test_pairs": [
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_8",
+            "src_ip": "10.0.0.107",
+            "src_gpu": "0",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_8",
+            "dst_ip": "10.0.0.120",
+            "dst_gpu": "0"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_7",
+            "src_ip": "10.1.0.107",
+            "src_gpu": "1",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_7",
+            "dst_ip": "10.1.0.120",
+            "dst_gpu": "1"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_6",
+            "src_ip": "10.2.0.107",
+            "src_gpu": "2",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_6",
+            "dst_ip": "10.2.0.120",
+            "dst_gpu": "2"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_5",
+            "src_ip": "10.3.0.107",
+            "src_gpu": "3",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_5",
+            "dst_ip": "10.3.0.120",
+            "dst_gpu": "3"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_4",
+            "src_ip": "10.4.0.107",
+            "src_gpu": "4",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_4",
+            "dst_ip": "10.4.0.120",
+            "dst_gpu": "4"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_3",
+            "src_ip": "10.5.0.107",
+            "src_gpu": "5",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_3",
+            "dst_ip": "10.5.0.120",
+            "dst_gpu": "5"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_2",
+            "src_ip": "10.6.0.107",
+            "src_gpu": "6",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_2",
+            "dst_ip": "10.6.0.120",
+            "dst_gpu": "6"
+        },
+        {
+            "src_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-jpxgt",
+            "src_hca": "mlx5_1",
+            "src_ip": "10.7.0.107",
+            "src_gpu": "7",
+            "dst_pod": "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-7b8tm",
+            "dst_hca": "mlx5_1",
+            "dst_ip": "10.7.0.120",
+            "dst_gpu": "7"
+        }
+    ]
+}

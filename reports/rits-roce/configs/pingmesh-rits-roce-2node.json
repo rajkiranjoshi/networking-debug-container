@@ -1,0 +1,12 @@
+{
+  "namespace": "ecrncevi-dev-p12w4d3w4",
+  "pods": [
+    "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ccthw",
+    "networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ds5tz"
+  ],
+  "interfaces": [
+    "net1", "net2", "net3", "net4",
+    "net5", "net6", "net7", "net8"
+  ],
+  "max_workers": 10
+}

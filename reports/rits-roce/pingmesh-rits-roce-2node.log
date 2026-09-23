@@ -1,0 +1,75 @@
+
+╔═══════════════════════════════════════════════╗
+║    RoCE Cluster Pingmesh Connectivity Test    ║
+╚═══════════════════════════════════════════════╝
+
+Configuration:
+  Namespace: ecrncevi-dev-p12w4d3w4
+  Mode: pods
+  Pods: 2
+  Interfaces per pod: 8
+  Expected pairs per pair: 64
+  Max workers: 10
+
+📡 Collecting interface IP addresses...
+
+  networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ccthw ... ✓ (8/8 IPs)
+  networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ds5tz ... ✓ (8/8 IPs)
+
+✓ Collected 16 interface IPs across 2 pods
+
+🔄 Running pingmesh tests...
+
+  Total ping tests to run: 64
+
+    Ping tests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 64/64
+
+
+  Completed in 58.565 seconds
+
+📊 Pingmesh Connectivity Matrix
+(Values show: successful_pairs/total_pairs)
+
+                 Pod A \ B  networking-debug-pod-ri…  networking-debug-pod-rit… 
+ networking-debug-pod-rit…             -                        8/64            
+ networking-debug-pod-rit…            8/64                        -             
+
+📈 Summary
+----------------------------------------
+  Total node pairs tested: 1
+  Total NIC pairs tested: 64
+  Successful pings: 8/64 (12.5%)
+
+  ● Fully connected node pairs: 0
+  ● Partially connected node pairs: 1
+  ● Disconnected node pairs: 0
+
+❌ Failure Details
+================================================================================
+
+Node Pair: networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ccthw ↔ 
+networking-debug-pod-rits-roce-z6lst-worker-h100-3-gdr-ds5tz
+  Status: 8/64 pairs succeeded
+  Failed connections:
+    ✗ net1-2(10.2.0.70) → net1-4(10.4.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-5(10.5.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-1(10.3.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-3(10.1.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-0(10.0.0.70) → net1-1(10.3.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-0(10.0.0.70) → net1-0(10.2.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-2(10.0.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-6(10.6.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-2(10.2.0.70) → net1-7(10.7.0.41)
+      Error: command terminated with exit code 1
+    ✗ net1-0(10.0.0.70) → net1-4(10.4.0.41)
+      Error: command terminated with exit code 1
+    ... and 46 more failures
+
