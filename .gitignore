@@ -1,1 +1,11 @@
 .venv/
+
+# Local-only artifacts
+.DS_Store
+ibnetdiscover_output.txt
+.cursor/plans/
+bf3-fw-update/
+
+# Generated Python files
+__pycache__/
+*.py[cod]
