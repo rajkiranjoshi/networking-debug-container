@@ -13,5 +13,4 @@ if oc get pods -n "$NS" -o name 2>/dev/null | grep -q .; then
 fi
 oc delete namespace "$NS"
 
-echo "Host /var/tmp/bf3-fw-update directories were intentionally retained."
-
+echo "Host /var/mnt/tier0/bf3-fw-update directories were intentionally retained."

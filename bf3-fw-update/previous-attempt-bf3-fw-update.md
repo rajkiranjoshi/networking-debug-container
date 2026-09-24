@@ -155,9 +155,20 @@ The SR-IOV config daemon will run `mstconfig` on each PF to set `SRIOV_EN=True` 
 
 Without `-F`, some BF3s show "another backend already attached" and are invisible. Always use `rshim -b pcie -f -F -l 3`.
 
-### bfb-install hangs after successful flash
+### Historical suspected bfb-install hang (corrected)
 
-The `bfb-install` subprocess `cat /dev/rshimN/console` waits for EOF that never comes. If it runs longer than ~12 minutes, check `flint -d <pci> q` directly. If firmware shows updated, kill the `bfb-install` process and move on.
+Historical observation: this attempt concluded that a `bfb-install` subprocess
+was waiting indefinitely on the RShim console and recommended killing it after
+roughly 12 minutes if `flint` showed the new firmware.
+
+**Correction from the 2026-09-23 DOCA 3.5 canary:** do not use that timeout or
+kill recommendation. The command legitimately remained at the outer `0%`
+display for almost 30 minutes. After `Installation finished`, the BlueField
+performed PMI updates and multiple boots before reporting
+`In Enhanced NIC mode`; `bfb-install` and `doca-installer` then exited normally.
+Monitor `/tmp/bfb-install-<rshim>.log` and wait for the final mode marker and
+normal process exit. See the current operator runbook's “Long 0% progress after
+the image write” section.
 
 ### Zombie processes from rshim restarts
 
@@ -299,4 +310,3 @@ echo "=== IMPORTANT ==="
 echo "Firmware is staged but NOT active. A cold reboot / power cycle is required."
 echo "After reboot, verify with: ethtool -i <interface> | grep firmware"
 ```
-

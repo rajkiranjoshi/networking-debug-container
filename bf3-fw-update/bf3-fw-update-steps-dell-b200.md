@@ -124,20 +124,71 @@ scripts/deploy_pod_to_node.sh "$NODE" "$IMAGE"
 scripts/stage-bfb.sh "$NODE" "$BFB"
 scripts/start-rshim.sh "$NODE"
 scripts/inventory.sh "$NODE"
+# Optional operator-visible preview; update-firmware.sh repeats this check.
 scripts/preflight-device.sh "$NODE" "$PF"
-scripts/install-device.sh "$NODE" "$PF" --confirm "$NODE/$PF"
+scripts/update-firmware.sh "$NODE" "$PF" --confirm "$NODE/$PF"
 ```
+
+The standalone `preflight-device.sh` invocation is an optional checkpoint for
+operator review. `update-firmware.sh` always reruns the same preflight
+immediately before writing so a previously reviewed result cannot become stale.
+
+`start-rshim.sh` always attempts normal PCIe ownership first. If an approved
+target explicitly returns `another backend already attached`, it validates that
+exact management BDF before starting a separate target-specific `-F` daemon.
+The script emits a warning and records every forced takeover in
+`/work/rshim-force-takeovers.tsv`; per-device logs and PID files are stored as
+`/work/rshim-force-<BDF>.{log,pid}`. It never applies `-F` to an unapproved
+device or to the broad discovery daemon.
 
 `doca-installer` is the default writer. The direct legacy path is available
 only for an explicitly reviewed fallback:
 
 ```bash
-scripts/install-device.sh "$NODE" "$PF" \
+scripts/update-firmware.sh "$NODE" "$PF" \
   --confirm "$NODE/$PF" --legacy-bfb-install
 ```
 
 Never run the two writers concurrently or retry one while the other is active.
-The installer log path is recorded in `/work/last-install-log`.
+The installer transcript path is recorded in `/work/last-install-log`.
+The live `bfb-install` boot and firmware status is mirrored into the command
+output and persisted at the path recorded in `/work/last-bfb-install-log`.
+The DOCA progress bar's device-count redraws are retained in the raw installer
+transcript but suppressed from the terminal output. ANSI colors, including the
+low-contrast yellow pending-firmware highlight, are also removed from the
+terminal stream while remaining intact in the raw transcript. `archive-logs.sh`
+also collects any legacy/current-Pod `/tmp/bfb-install-*.log` files.
+DOCA's detailed `/var/log/doca_installer_logs` directory is also persisted at
+`/work/doca-installer-logs` on tier0 and included by `archive-logs.sh`.
+RShim daemon logs remain active for the Pod's lifetime; archival tolerates
+growth during the read and captures each such file through the point observed.
+
+### Long 0% progress after the image write
+
+The first `dell-b200-01` canary on `0000:18:00.0` took approximately 30
+minutes. DOCA's outer progress display remained at `0%` while the useful
+RShim status log continued through these phases:
+
+1. `NIC firmware update done: 32.50.1002`
+2. `Installation finished`
+3. BlueField boot, PMI updates, and a PMI-requested reboot
+4. A second BlueField boot
+5. `In Enhanced NIC mode`
+6. `doca-installer` post-install verification and exit
+
+`Installation finished` therefore does **not** mean the complete host-side
+command is finished. Do not interrupt the process there. Wait for
+`In Enhanced NIC mode` and for `doca-installer` itself to exit. The update
+script highlights these phases and suppresses only the unhelpful repeated DOCA
+progress redraws; it does not impose an automatic timeout or kill the writer.
+
+An older note in
+[`previous-attempt-bf3-fw-update.md`](./previous-attempt-bf3-fw-update.md)
+described this interval as a `bfb-install` hang and suggested killing it after
+roughly 12 minutes. The 2026-09-23 canary disproved that recommendation for
+this bundle: legitimate post-write work continued until almost 30 minutes.
+Only consider intervention after checking the live RShim log and process state;
+never use elapsed time or the outer `0%` display alone.
 
 ### Optional BMC/CEC firmware configuration
 
@@ -151,7 +202,7 @@ method and add:
 --config-remote /work/bf.cfg
 ```
 
-to the `install-device.sh` invocation. Log archival explicitly excludes
+to the `update-firmware.sh` invocation. Log archival explicitly excludes
 `bf.cfg` and all BFB files.
 
 ## 3. Handle an activation power cycle
@@ -176,19 +227,21 @@ oc delete pod -n bf3-fw-maintenance "bf3-fw-maintenance-$NODE" --wait=true
 ```
 
 Do not use `finish-node.sh` at this point because that script also uncordons the
-node. The host directory `/var/tmp/bf3-fw-update` is retained across Pod
-recreation and is intentionally not deleted automatically.
+node. The host directory `/var/mnt/tier0/bf3-fw-update` is retained across Pod
+recreation and is intentionally not deleted automatically. A valid BFB already
+under `/work` is hash-verified and reused by `stage-bfb.sh` without another
+copy.
 
 ## 4. Update the remaining devices
 
-After the canary passes, run the same explicit preflight and confirmed install
-for each remaining PF listed for that node in `config/targets.tsv`. Deliberately
-there is no automatic install loop. Example:
+After the canary passes, run the same confirmed update for each remaining PF
+listed for that node in `config/targets.tsv`. Deliberately there is no automatic
+update loop. The standalone preflight remains available as an optional preview:
 
 ```bash
 export PF=0000:1a:00.0
 scripts/preflight-device.sh "$NODE" "$PF"
-scripts/install-device.sh "$NODE" "$PF" --confirm "$NODE/$PF"
+scripts/update-firmware.sh "$NODE" "$PF" --confirm "$NODE/$PF"
 ```
 
 If the Pod or node was restarted, always run these first:
@@ -218,8 +271,8 @@ After both nodes pass and their logs are archived:
 scripts/cleanup-namespace.sh --confirm-delete-namespace
 ```
 
-The cleanup intentionally retains each host's `/var/tmp/bf3-fw-update` for
-manual review and later removal.
+The cleanup intentionally retains each host's
+`/var/mnt/tier0/bf3-fw-update` for manual review and later removal.
 
 ## 6. Deferred SR-IOV acceptance test
 

@@ -34,6 +34,8 @@ spec:
       readOnly: true
     - name: work
       mountPath: /work
+    - name: doca-installer-logs
+      mountPath: /var/log/doca_installer_logs
   volumes:
   - name: host-dev
     hostPath:
@@ -49,5 +51,9 @@ spec:
       type: Directory
   - name: work
     hostPath:
-      path: /var/tmp/bf3-fw-update
+      path: /var/mnt/tier0/bf3-fw-update
+      type: DirectoryOrCreate
+  - name: doca-installer-logs
+    hostPath:
+      path: /var/mnt/tier0/bf3-fw-update/doca-installer-logs
       type: DirectoryOrCreate

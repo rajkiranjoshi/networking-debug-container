@@ -5,12 +5,20 @@ verified state needed to continue without the original chat session.
 
 ## Current state
 
-- Planning and guarded scripts are complete.
-- No firmware installation has been executed.
-- The derived maintenance image has not yet been built because the original
-  macOS workstation had no running Docker/Podman daemon.
-- The next action is to build and inspect the image on an x86_64 Docker host.
-- Do not run an installer merely as part of validating the build.
+- The maintenance image was built and deployed, and the BFB is staged on
+  persistent tier0 storage on `dell-b200-01`.
+- The node is drained and cordoned. The maintenance Pod is running and all 10
+  approved SuperNICs have validated RShim mappings.
+- The first canary write to `0000:18:00.0` completed on 2026-09-23. The RShim
+  log reached `In Enhanced NIC mode`, both installer processes exited normally,
+  and live `flint` reports NIC firmware `32.50.1002` with PSID
+  `MT_0000001069`.
+- DOCA's final report identified the target NIC firmware as pending and
+  explicitly requested a full host power cycle. Do not update another device
+  until the documented archive and iDRAC cold-power procedure is completed and
+  the canary is reverified.
+- The Pod and persistent logs must remain available until the canary evidence
+  has been archived.
 
 Before cloning remotely, ensure local `main` is pushed. At handoff creation it
 was 10 commits ahead of `origin/main`; an unpushed commit cannot be recovered by
@@ -138,11 +146,28 @@ registry access, and the separately transferred BFB.
   verifies the resulting `.spec.nodeName`.
 - The Pod is privileged and host-networked, mounts host `/dev`, `/sys`, and
   `/lib/modules`, and stores persistent work under
-  `/var/tmp/bf3-fw-update` on the host.
-- RShim starts without force takeover. Never add `-F` without a separate review.
+  `/var/mnt/tier0/bf3-fw-update` on the host's tier0 NVMe storage.
+- DOCA's `/var/log/doca_installer_logs` is backed by
+  `/var/mnt/tier0/bf3-fw-update/doca-installer-logs`, so detailed installer
+  logs survive Pod deletion and are included in `/work` log archives.
+- `update-firmware.sh` mirrors the useful `bfb-install` status into its terminal
+  output and a persistent `/work/bfb-install-<rshim>-<timestamp>.log`; the path
+  is recorded in `/work/last-bfb-install-log` before the writer starts.
+- The outer DOCA progress display can remain at `0%` for almost 30 minutes.
+  `Installation finished` ends the image-write phase but is followed by PMI
+  updates and BlueField boots. Do not interrupt it; wait for
+  `In Enhanced NIC mode` and normal installer exit. The older 12-minute kill
+  advice in `previous-attempt-bf3-fw-update.md` is explicitly corrected there.
+- RShim starts without force takeover. If an approved target explicitly reports
+  `another backend already attached`, the reviewed workflow confirms that exact
+  BDF and starts a separate target-specific `-F` daemon. Each use is warned on
+  stderr and recorded in `/work/rshim-force-takeovers.tsv` with its dedicated
+  PID and detailed log; broad force takeover remains prohibited.
 - Every write requires the exact confirmation `--confirm NODE/PF_BDF`.
 - Every write rechecks the target table, live RShim mapping, PSID, OPN, mode,
-  interface, bundle hash, and `sriov_numvfs=0`.
+  interface, bundle hash, and zero active SR-IOV VFs. `sriov_numvfs=0` is
+  required when that attribute is exposed; `N/A` is accepted only when no
+  `virtfn*` links exist.
 - `doca-installer` is the default writer. `--legacy-bfb-install` is a reviewed
   fallback only; never run both concurrently.
 - Exit 20 means the installer requested a cold host power cycle. Exit 21 means
@@ -166,8 +191,9 @@ scripts/deploy_pod_to_node.sh "$NODE" "$IMAGE"
 scripts/stage-bfb.sh "$NODE" "$BFB"
 scripts/start-rshim.sh "$NODE"
 scripts/inventory.sh "$NODE"
+# Optional operator-visible preview; update-firmware.sh repeats this check.
 scripts/preflight-device.sh "$NODE" "$PF"
-scripts/install-device.sh "$NODE" "$PF" --confirm "$NODE/$PF"
+scripts/update-firmware.sh "$NODE" "$PF" --confirm "$NODE/$PF"
 ```
 
 Do not execute this canary merely to validate the remote image build. Firmware
@@ -182,7 +208,8 @@ installation requires a separately declared maintenance window.
 - The rendered Pod manifest passed an OpenShift client dry-run.
 - The pinned debug base digest was resolved from Quay.
 - The DOCA repository contains the exact pinned package versions.
-- A full container build remains pending on the remote Docker host.
+- The published maintenance image and its installed tool versions were
+  validated before the canary deployment.
 
 ## Deferred acceptance test
 

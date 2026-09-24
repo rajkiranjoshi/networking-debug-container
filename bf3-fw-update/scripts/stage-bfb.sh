@@ -31,13 +31,16 @@ remote_hash=$(oc exec -n "$NS" "$pod" -- sha256sum "$remote_path" |
 [[ $remote_hash == "$BFB_SHA256" ]] ||
     die "remote BFB hash $remote_hash does not match $BFB_SHA256"
 
-note "Reading embedded target firmware catalog"
+note "Reading bundle target firmware versions"
 oc exec -n "$NS" "$pod" -- bash -lc \
     "set -o pipefail; doca-installer -b '$remote_path' --show-target-fw 2>&1 | tee /work/show-target-fw.txt"
 
 catalog=$(oc exec -n "$NS" "$pod" -- cat /work/show-target-fw.txt)
-grep -Fq "$TARGET_PSID" <<<"$catalog" || die "target PSID absent from BFB catalog"
 grep -Fq "$TARGET_FW" <<<"$catalog" || die "target firmware absent from BFB catalog"
-grep -Fq '900-9D3D4-00EN-HA0' <<<"$catalog" || die "target OPN absent from BFB catalog"
+
+# --show-target-fw reports component versions, not the embedded OPN/PSID
+# catalog. Exact bundle identity is enforced by BFB_SHA256 above; compatibility
+# with TARGET_PSID and TARGET_OPN was established by the documented read-only
+# catalog inspection and is rechecked against each live device before a write.
 
 note "BFB staged and verified at $remote_path"

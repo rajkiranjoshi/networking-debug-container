@@ -48,8 +48,17 @@ note "Verifying userspace tools and absence of a pre-existing RShim session"
 oc exec -n "$NS" "$pod" -- bash -lc '
     set -euo pipefail
     test -c /dev/cuse
+    test -w /work
+    test -w /var/log/doca_installer_logs
+    test /var/log/doca_installer_logs -ef /work/doca-installer-logs
     dpkg-query -W rshim mft doca-installer
     mst version
+    missing_libraries=$(ldd /usr/sbin/rshim | awk "/not found/ {print}")
+    if [[ -n $missing_libraries ]]; then
+        printf "%s\n" "$missing_libraries" >&2
+        echo "ERROR: RShim has unresolved runtime libraries" >&2
+        exit 1
+    fi
     if compgen -G "/dev/rshim*/misc" >/dev/null; then
         echo "ERROR: pre-existing RShim devices found" >&2
         exit 1

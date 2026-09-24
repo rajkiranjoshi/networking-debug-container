@@ -36,6 +36,8 @@ while IFS=$'\t' read -r row_node pf mgmt iface; do
         sed -n 's/^[[:space:]]*LnkSta:[[:space:]]*//p' | head -1 || true)
     vfs_file=/sys/bus/pci/devices/$pf/sriov_numvfs
     if [[ -r $vfs_file ]]; then vfs=$(<"$vfs_file"); else vfs=N/A; fi
+    shopt -s nullglob
+    active_vfs=(/sys/bus/pci/devices/"$pf"/virtfn*)
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$pf" "$iface" "$psid" "$fw" "$opn" "$mode" \
@@ -50,7 +52,8 @@ while IFS=$'\t' read -r row_node pf mgmt iface; do
     [[ $driver == mlx5_core ]] || failures=$((failures + 1))
     [[ $link == *'Speed 32GT/s'* && $link == *'Width x16'* ]] ||
         failures=$((failures + 1))
-    [[ $vfs == 0 ]] || failures=$((failures + 1))
+    [[ $vfs == 0 || $vfs == N/A ]] || failures=$((failures + 1))
+    [[ ${#active_vfs[@]} == 0 ]] || failures=$((failures + 1))
 done <"$targets_file"
 
 [[ $count -eq 10 ]] || {
