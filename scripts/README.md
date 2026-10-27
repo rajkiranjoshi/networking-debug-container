@@ -58,10 +58,11 @@ Useful for diagnosing GPU-direct RDMA and device passthrough issues.
 
 ## Usage
 
-These scripts are copied to `/root/scripts/` inside the container. Run them from within a deployed pod:
+These scripts are copied to `$HOME/scripts/` inside the container (`/home/debug/scripts/`
+in the main image, `/root/scripts/` in the EFA image). Run them from within a deployed pod:
 
 ```bash
 kubectl exec -it networking-debug-pod-<node> -n <namespace> -- bash
-cd /root/scripts
+cd "$HOME/scripts"
 ./iface_to_hca_mapping.sh
 ```

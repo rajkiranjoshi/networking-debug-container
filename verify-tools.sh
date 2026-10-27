@@ -354,10 +354,10 @@ echo ""
 
 # Test scripts directory
 echo -e "${BLUE}=== Custom Scripts ===${NC}"
-if docker run --rm "$IMAGE_TAG" test -d /root/scripts 2>/dev/null; then
+if docker run --rm "$IMAGE_TAG" /bin/sh -c 'test -d "$HOME/scripts"' 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Scripts directory exists"
     ((PASSED++))
-    docker run --rm "$IMAGE_TAG" ls -la /root/scripts/
+    docker run --rm "$IMAGE_TAG" /bin/sh -c 'ls -la "$HOME/scripts/"'
 else
     echo -e "${RED}✗${NC} Scripts directory not found"
     ((FAILED++))

@@ -150,8 +150,14 @@ RUN echo "deb [trusted=yes] https://linux.mellanox.com/public/repo/mlnx_ofed/lat
 # Copy system packages list and install utilities
 COPY system-packages.txt /tmp/system-packages.txt
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends $(cat /tmp/system-packages.txt) && \
+    apt-get install -y --no-install-recommends libcap2-bin $(cat /tmp/system-packages.txt) && \
     rm -rf /var/lib/apt/lists/* /tmp/system-packages.txt
+
+# A cap_net_raw=ep ping can fail at exec when NET_RAW is outside the pod's
+# capability bounding set. Use unprivileged ICMP echo sockets instead; the pod's
+# net.ipv4.ping_group_range must allow one of the user's groups.
+RUN if [ -n "$(getcap /usr/bin/ping)" ]; then setcap -r /usr/bin/ping; fi && \
+    chmod u-s,g-s /usr/bin/ping
 
 # Copy CUDA+ROCm-compiled perftest binaries from builder stage
 COPY --from=builder /usr/local/perftest-gpu/bin/* /usr/local/bin/
@@ -164,14 +170,22 @@ RUN echo "Verifying perftest binaries..." && \
 # Update PCI IDs database
 RUN update-pciids
 
-# Enable colored prompt in bash
-RUN sed -i 's/#force_color_prompt=yes/force_color_prompt=yes/' /root/.bashrc
+# OpenShift assigns a runtime UID/GID, which cannot traverse /root. Keep the
+# shared debug home writable for arbitrary IDs, with sticky-bit protection for
+# files owned by other users. Scripts and shell configuration remain root-owned.
+ENV HOME=/home/debug
+RUN mkdir -p "$HOME" && \
+    cp /etc/skel/.bashrc "$HOME/.bashrc" && \
+    sed -i 's/#force_color_prompt=yes/force_color_prompt=yes/' "$HOME/.bashrc" && \
+    # Skip Ubuntu's sudo hint, whose `groups` call warns for an unnamed GID.
+    touch "$HOME/.hushlogin" && \
+    chmod 0644 "$HOME/.bashrc" "$HOME/.hushlogin" && \
+    chmod 1777 "$HOME"
 
-# Copy scripts directory to /root
-COPY scripts /root/scripts
+COPY scripts /home/debug/scripts
+RUN chmod -R a+rX /home/debug/scripts
 
-# Set working directory to /root
-WORKDIR /root
+WORKDIR /home/debug
 
 # Default command
 CMD ["/bin/bash"]
