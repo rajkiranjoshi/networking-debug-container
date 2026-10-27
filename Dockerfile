@@ -63,32 +63,6 @@ RUN apt-get update && \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-# Build libfabric with EFA, verbs, and other providers (for AWS EFA and OFI support)
-# --enable-cuda-dlopen: libfabric's configure requires -lcuda and -lnvidia-ml (GPU driver
-# libraries) at link time, but these aren't available in a Docker build without GPU drivers.
-# cuda-dlopen defers loading to runtime via dlopen(), which is the standard container approach.
-RUN git clone --branch v2.6.0 --depth 1 https://github.com/ofiwg/libfabric.git /tmp/libfabric && \
-    cd /tmp/libfabric && \
-    ./autogen.sh && \
-    ./configure --prefix=/usr/local/libfabric \
-        --enable-efa \
-        --enable-verbs \
-        --enable-shm \
-        --enable-mrail \
-        --with-cuda=/usr/local/cuda \
-        --enable-cuda-dlopen && \
-    make -j$(nproc) && \
-    make install
-
-# Build fabtests (fi_pingpong, fi_msg_bw, fi_msg_lat, fi_rma_bw, etc.)
-RUN cd /tmp/libfabric/fabtests && \
-    ./autogen.sh && \
-    ./configure --prefix=/usr/local/libfabric \
-        --with-libfabric=/usr/local/libfabric \
-        --with-cuda=/usr/local/cuda && \
-    make -j$(nproc) && \
-    make install
-
 # Build perftest with both CUDA and ROCm support
 RUN git clone https://github.com/linux-rdma/perftest.git /tmp/perftest && \
     cd /tmp/perftest && \
@@ -182,21 +156,10 @@ RUN apt-get update && \
 # Copy CUDA+ROCm-compiled perftest binaries from builder stage
 COPY --from=builder /usr/local/perftest-gpu/bin/* /usr/local/bin/
 
-# Copy libfabric libraries and fabtests tools (fi_pingpong, fi_msg_bw, etc.)
-COPY --from=builder /usr/local/libfabric /usr/local/libfabric
-ENV PATH=/usr/local/libfabric/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/libfabric/lib:${LD_LIBRARY_PATH}
-
 # Verify perftest binaries work
 RUN echo "Verifying perftest binaries..." && \
     ls -lh /usr/local/bin/ib_* && \
     ldd /usr/local/bin/ib_write_bw || true
-
-# Verify libfabric and fabtests tools
-RUN echo "Verifying libfabric installation..." && \
-    fi_info --version && \
-    (fi_pingpong --help > /dev/null 2>&1 || true) && \
-    echo "Available fi_* tools:" && ls /usr/local/libfabric/bin/fi_*
 
 # Update PCI IDs database
 RUN update-pciids
