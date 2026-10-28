@@ -39,6 +39,15 @@ Create a JSON config file. Use either `nodes` or `pods` (not both).
 }
 ```
 
+The `interfaces` list also accepts case-sensitive shell-style wildcards (`*`,
+`?`, and `[seq]`). For example, use `"interfaces": ["net1*", "net2*"]` for
+pods whose VF interfaces may be named `net1vf0` or `net1vf1`.
+Each pattern must match exactly one interface in each pod. Zero or multiple
+matches stop discovery with exit code `1`, before any ping tests run. Matching
+includes interfaces without IPv4 addresses, so `net1vf0` and `net1vf1` in the
+same pod are an error even if only one has an IP. Results use the resolved
+interface names. Literal interface names retain their existing behavior.
+
 ### EFA Config (see `pingmesh-eks_h100.json`)
 
 ```json
@@ -59,7 +68,7 @@ Create a JSON config file. Use either `nodes` or `pods` (not both).
 | `network_type` | `"roce"` (default) or `"efa"` |
 | `nodes` | List of node names (pod name derived as `networking-debug-pod-<node>`) |
 | `pods` | List of pod names to use directly (mutually exclusive with `nodes`) |
-| `interfaces` | (RoCE) List of network interface names |
+| `interfaces` | (RoCE) List of interface names or wildcard patterns; each pattern must match exactly one interface per pod |
 | `devices` | (EFA) List of EFA device names (without `-rdm` suffix) |
 | `max_workers` | Concurrent test threads. RoCE default: 10. EFA max: 8 |
 

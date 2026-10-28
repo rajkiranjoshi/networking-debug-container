@@ -25,7 +25,9 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from itertools import combinations
+from shlex import quote
 from typing import Optional
 
 from rich.console import Console
@@ -117,17 +119,52 @@ def run_kubectl_command(namespace: str, pod_name: str, command: str, timeout: in
         return False, str(e)
 
 
+class InterfaceDiscoveryError(ValueError):
+    """An interface pattern could not be resolved to exactly one interface."""
+
+
+def resolve_interface_name(namespace: str, entity: str, iface_pattern: str, entity_to_pod: dict[str, str] | None = None) -> str:
+    """Resolve a glob against all pod interfaces, including those without IPs."""
+    if not any(char in iface_pattern for char in '*?['):
+        return iface_pattern
+
+    pod_name = get_pod_name(entity, entity_to_pod)
+    context = f"Pod {pod_name}: interface pattern {iface_pattern!r}"
+    success, output = run_kubectl_command(namespace, pod_name, "ip -j link show")
+    if not success:
+        raise InterfaceDiscoveryError(f"{context}: could not list interfaces: {output}")
+
+    try:
+        names = {iface['ifname'] for iface in json.loads(output)}
+        matches = sorted(name for name in names if fnmatchcase(name, iface_pattern))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise InterfaceDiscoveryError(f"{context}: invalid interface list: {exc}") from exc
+
+    if len(matches) != 1:
+        raise InterfaceDiscoveryError(
+            f"{context} matched {len(matches)} interfaces "
+            f"({', '.join(matches) or 'none'}); expected exactly one"
+        )
+    return matches[0]
+
+
 def get_interface_ip(namespace: str, entity: str, iface_name: str, entity_to_pod: dict[str, str] | None = None) -> Optional[str]:
     """Get the IPv4 address of a network interface on an entity (node or pod)."""
     pod_name = get_pod_name(entity, entity_to_pod)
     # Get IPv4 address for the interface
-    command = f"ip -4 addr show {iface_name} 2>/dev/null | grep -oP 'inet \\K[0-9.]+'"
+    command = f"ip -4 addr show {quote(iface_name)} 2>/dev/null | grep -oP 'inet \\K[0-9.]+'"
     
     success, output = run_kubectl_command(namespace, pod_name, command)
     if success and output:
         # Return first IP if multiple exist
         return output.split('\n')[0].strip()
     return None
+
+
+def discover_interface_ip(namespace: str, entity: str, iface_pattern: str, entity_to_pod: dict[str, str] | None = None) -> tuple[str, Optional[str]]:
+    """Return the concrete interface name and its IPv4 address."""
+    iface_name = resolve_interface_name(namespace, entity, iface_pattern, entity_to_pod)
+    return iface_name, get_interface_ip(namespace, entity, iface_name, entity_to_pod)
 
 
 def run_ping_test(namespace: str, src_entity: str, src_ip: str, dst_ip: str, entity_to_pod: dict[str, str] | None = None, retries: int = 1, backoff_ms: int = 500) -> tuple[bool, str]:
@@ -161,6 +198,8 @@ def run_ping_test(namespace: str, src_entity: str, src_ip: str, dst_ip: str, ent
 def collect_interface_ips(namespace: str, entities: list[str], interfaces: list[str], console: Console, entity_to_pod: dict[str, str] | None = None, max_workers: int = 10) -> dict:
     """
     Collect IP addresses for all interfaces on all entities (nodes or pods).
+
+    Wildcards must match exactly one interface per entity or discovery fails.
     
     Returns:
         Dict mapping entity -> interface -> IP address
@@ -174,17 +213,19 @@ def collect_interface_ips(namespace: str, entities: list[str], interfaces: list[
         futures = {}
         for entity in entities:
             for iface in interfaces:
-                future = executor.submit(get_interface_ip, namespace, entity, iface, entity_to_pod)
+                future = executor.submit(discover_interface_ip, namespace, entity, iface, entity_to_pod)
                 futures[future] = (entity, iface)
         
         for future in as_completed(futures):
             entity, iface = futures[future]
             try:
-                ip = future.result()
+                iface_name, ip = future.result()
                 if ip:
-                    entity_interface_ips[entity][iface] = ip
+                    entity_interface_ips[entity][iface_name] = ip
                 else:
                     entity_status[entity]["errors"] += 1
+            except InterfaceDiscoveryError:
+                raise
             except Exception:
                 entity_status[entity]["errors"] += 1
             
@@ -892,10 +933,15 @@ def _run_roce_mode(config, namespace, entities, entity_to_pod, mode, max_workers
     console.print(f"  Expected pairs per pair: {len(interfaces) * len(interfaces)}")
     console.print(f"  Max workers: {max_workers}")
 
-    entity_interface_ips = collect_interface_ips(
-        namespace, entities, interfaces, console,
-        entity_to_pod=entity_to_pod, max_workers=max_workers
-    )
+    try:
+        entity_interface_ips = collect_interface_ips(
+            namespace, entities, interfaces, console,
+            entity_to_pod=entity_to_pod, max_workers=max_workers
+        )
+    except InterfaceDiscoveryError as exc:
+        console.print("\n[bold red]Error:[/bold red] Interface discovery failed:")
+        console.print(str(exc), markup=False)
+        sys.exit(1)
 
     total_ips = sum(len(ips) for ips in entity_interface_ips.values())
     if total_ips == 0:
